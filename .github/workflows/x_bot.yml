@@ -1,7 +1,7 @@
-name: X daily post (unmei / @unmei_meiseki_)
+name: X daily post (unmei / @unmei_meishiki_)
 
 # 毎朝 5:00 JST = 20:00 UTC（前日）。JST = UTC+9。
-# 対象アカウント: @unmei_meiseki_（@iching_kobo とは別アカウント・完全独立）
+# 対象アカウント: @unmei_meishiki_（@iching_kobo とは別アカウント・完全独立）
 on:
   schedule:
     - cron: "0 20 * * *"
@@ -27,7 +27,7 @@ jobs:
       - name: Run daily poster
         env:
           TZ: Asia/Tokyo
-          X_STORAGE_STATE: ${{ secrets.X_STORAGE_STATE }}   # @unmei_meiseki_ のセッション(storage_state JSON)
+          X_STORAGE_STATE: ${{ secrets.X_STORAGE_STATE }}   # @unmei_meishiki_ のセッション(storage_state JSON)
           POSTS_ENDPOINT:   ${{ secrets.POSTS_ENDPOINT }}   # 当日の1本を返すURL
           ADVANCE_ENDPOINT: ${{ secrets.ADVANCE_ENDPOINT }} # 投稿後にカーソルを進めるURL
           ADVANCE_TOKEN:    ${{ secrets.ADVANCE_TOKEN }}
