@@ -6,17 +6,16 @@
 流れ:
   1) 素材サーバーから当日の1本(動画URL + 投稿文2本)を取得
   2) セッション(storage_state)で x.com に入り、動画を添付して1投稿目
-  3) 続けて2投稿目をスレッド返信で投稿
+  3) 投稿したポストを開いて2投稿目をスレッド返信
   4) 成功したら素材サーバーのカーソルを進める
 
 必要な GitHub Secrets:
   X_STORAGE_STATE / POSTS_ENDPOINT / ADVANCE_ENDPOINT / ADVANCE_TOKEN
-注意: Xの画面セレクタ(data-testid)は変わりうる。初回は DRY_RUN=1 で検証する。
 
 改訂メモ (2026-10-12):
-  投稿欄 tweetTextarea_0 が「モーダル」と「primaryColumn内のインライン」の2箇所に
-  存在するため strict mode violation が発生した。DOM上で primaryColumn 配下でない
-  方（＝モーダル側）を選ぶよう JS で明示的に狙う。
+  - 投稿欄 tweetTextarea_0 が「モーダル」と「primaryColumn内インライン」の2箇所に
+    存在し strict mode violation になったため、モーダル側を JS で明示的に狙う。
+  - 動画アップロードの待ちを延長し、投稿後にポストURLを取得して返信する方式に変更。
 """
 import json, os, sys, urllib.request
 from pathlib import Path
@@ -64,6 +63,17 @@ UPLOAD_STATE_JS = """
 }
 """
 
+LATEST_URL_JS = """
+() => {
+  const links = [...document.querySelectorAll('a[href*="/status/"]')];
+  for (const a of links) {
+    const h = a.getAttribute('href') || '';
+    if (/^\\/[A-Za-z0-9_]+\\/status\\/\\d+$/.test(h)) return h;
+  }
+  return null;
+}
+"""
+
 
 def log(*a):
     print(*a, flush=True)
@@ -82,16 +92,14 @@ def download(url, dest):
 
 
 def fill_composer(page, text):
-    """モーダル側の投稿欄を狙って入力する（strict mode violation 回避）"""
     ok = page.evaluate(FOCUS_COMPOSER_JS)
     if not ok:
-        # フォールバック: とにかく1つ目
         page.locator('div[data-testid="tweetTextarea_0"]').first.click()
     page.wait_for_timeout(300)
     page.keyboard.type(text, delay=8)
 
 
-def wait_upload(page, timeout=180):
+def wait_upload(page, timeout=300):
     """動画アップロード完了（progressbar消滅 & 投稿ボタン有効）を待つ"""
     steps = max(1, timeout // 3)
     for i in range(steps):
@@ -110,8 +118,21 @@ def click_post(page):
     ok = page.evaluate(CLICK_POST_JS)
     if not ok:
         page.locator('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]').first.click()
-        ok = True
-    return ok
+
+
+def latest_post_url(page, handle, tries=10):
+    for i in range(tries):
+        try:
+            page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded")
+            page.wait_for_timeout(5000)
+            href = page.evaluate(LATEST_URL_JS)
+            if href:
+                log("[latest]", href)
+                return href
+        except Exception as e:
+            log("[latest] retry", i, repr(e)[:120])
+        page.wait_for_timeout(4000)
+    return None
 
 
 def post_first(page, video, text):
@@ -120,20 +141,15 @@ def post_first(page, video, text):
     page.set_input_files('input[type="file"]', video)
     page.wait_for_timeout(4000)
     fill_composer(page, text)
-    wait_upload(page, timeout=180)
+    wait_upload(page, timeout=300)
     page.wait_for_timeout(1500)
     click_post(page)
-    page.wait_for_timeout(9000)
+    page.wait_for_timeout(10000)
 
 
-def post_reply(page, handle, text):
-    """プロフィールの最新ポストを開いてスレッド返信する（タイムライン依存を回避）"""
-    page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded")
-    page.wait_for_timeout(5000)
-    art = page.locator('article[data-testid="tweet"]').first
-    art.wait_for(state="visible", timeout=20000)
-    art.click()
-    page.wait_for_timeout(3000)
+def post_reply(page, url, text):
+    page.goto("https://x.com" + url, wait_until="domcontentloaded")
+    page.wait_for_timeout(6000)
     fill_composer(page, text)
     page.wait_for_timeout(1200)
     click_post(page)
@@ -165,7 +181,7 @@ def main():
         page = ctx.new_page()
         page.goto("https://x.com/home", wait_until="domcontentloaded")
         page.wait_for_timeout(5000)
-        if "/login" in page.url or "i/flow/login" in page.url:
+        if "i/flow/login" in page.url or page.url.rstrip("/").endswith("/login"):
             log("[error] セッションが無効（cookie期限切れ）→ Cookieを再取得してSecretを更新")
             return 1
 
@@ -175,30 +191,39 @@ def main():
             log("[post1] 実行")
         except Exception as e:
             log("[error] 1投稿目に失敗:", repr(e))
-            page.screenshot(path=str(HERE / "err_post1.png"))
+            try:
+                page.screenshot(path=str(HERE / "err_post1.png"))
+            except Exception:
+                pass
             return 1
 
         # --- 2投稿目（スレッド返信） ---
         try:
-            post_reply(page, handle, item["post2"])
-            log("[post2] 実行")
-        except PWTimeout as e:
-            log("[warn] スレッド返信に失敗:", e)
+            url = latest_post_url(page, handle)
+            if url:
+                post_reply(page, url, item["post2"])
+                log("[post2] 実行 ->", url)
+            else:
+                log("[warn] 返信対象のポストURLを取得できず（スレッド2投目はスキップ）")
         except Exception as e:
-            log("[warn] スレッド返信に失敗:", repr(e))
+            log("[warn] スレッド返信に失敗:", repr(e)[:200])
 
         ctx.close()
         b.close()
 
     adv = os.environ.get("ADVANCE_ENDPOINT")
     if adv:
-        req = urllib.request.Request(adv, method="POST",
-                                     headers={"x-token": os.environ.get("ADVANCE_TOKEN", "")})
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                log("[advance]", r.read().decode()[:120])
-        except Exception as e:
-            log("[warn] advance失敗:", e)
+        for attempt in range(3):
+            req = urllib.request.Request(adv, method="POST",
+                                         headers={"x-token": os.environ.get("ADVANCE_TOKEN", "")})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    log("[advance]", r.read().decode()[:120])
+                break
+            except Exception as e:
+                log("[warn] advance失敗", attempt + 1, repr(e)[:120])
+                import time
+                time.sleep(5)
     return 0
 
 
