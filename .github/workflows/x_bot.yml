@@ -10,6 +10,9 @@ on:
       dry_run:
         description: "1 = 投稿せず検証だけ"
         default: "0"
+      probe:
+        description: "1 = 添付テストのみ（投稿しない）"
+        default: "0"
 
 concurrency:
   group: x-daily
@@ -32,6 +35,7 @@ jobs:
           ADVANCE_ENDPOINT: ${{ secrets.ADVANCE_ENDPOINT }} # 投稿後にカーソルを進めるURL
           ADVANCE_TOKEN:    ${{ secrets.ADVANCE_TOKEN }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          PROBE: ${{ github.event.inputs.probe || '0' }}
         run: bash automation/x_daily/ci.sh
       - name: Upload log & state
         if: always()
