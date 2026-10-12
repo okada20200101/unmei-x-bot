@@ -144,6 +144,11 @@ def post_reply(page, handle, text):
 
 
 def main():
+    import hashlib
+    _tk = os.environ.get("ADVANCE_TOKEN", "")
+    _ep = os.environ.get("ADVANCE_ENDPOINT", "")
+    log("[diag] token_len", len(_tk), "token_sha", hashlib.sha256(_tk.encode()).hexdigest()[:16],
+        "ep_len", len(_ep), "ep_tail", _ep[-12:])
     state = os.environ.get("X_STORAGE_STATE")
     if not state:
         log("[skip] X_STORAGE_STATE 未設定（@unmei_meishiki_ のCookieをSecretに登録してください）")
