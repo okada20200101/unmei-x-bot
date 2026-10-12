@@ -61,6 +61,7 @@ MEDIA_JS = """
 () => {
   const d = document.querySelector('[role="dialog"]');
   const scope = d || document;
+  if (scope.querySelector('video')) return 'ready';
   const att = scope.querySelector('[data-testid="attachments"]');
   if (att && att.querySelector('img, video')) return 'ready';
   if (att) return 'attached';
@@ -141,9 +142,13 @@ def on_response(r):
 def post_first(page, video, text):
     page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
     page.wait_for_timeout(4000)
-    page.set_input_files('input[type="file"]', video)
+    try:
+        page.set_input_files('input[data-testid="fileInput"]', video)
+    except Exception as e:
+        log("[media] fileInput指定をフォールバック:", repr(e)[:120])
+        page.set_input_files('input[type="file"]', video)
     page.wait_for_timeout(3000)
-    wait_media(page, timeout=180)
+    log('[media] attached:', wait_media(page, timeout=300))
     fill_composer(page, text)
     page.wait_for_timeout(1500)
     click_post(page)
