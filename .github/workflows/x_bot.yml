@@ -13,6 +13,9 @@ on:
       probe:
         description: "1 = 添付テストのみ（投稿しない）"
         default: "0"
+      require_media:
+        description: "1 = 動画が付かなければ投稿せず中止"
+        default: "0"
 
 concurrency:
   group: x-daily
@@ -36,6 +39,7 @@ jobs:
           ADVANCE_TOKEN:    ${{ secrets.ADVANCE_TOKEN }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           PROBE: ${{ github.event.inputs.probe || '0' }}
+          REQUIRE_MEDIA: ${{ github.event.inputs.require_media || '0' }}
         run: bash automation/x_daily/ci.sh
       - name: Upload log & state
         if: always()
@@ -45,4 +49,5 @@ jobs:
           path: |
             automation/x_daily/state.json
             automation/x_daily/last_run.log
+            automation/x_daily/*.png
           if-no-files-found: ignore
