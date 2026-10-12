@@ -172,42 +172,34 @@ def on_response(r):
         pass
 
 
+def _cdp_set(page, video):
+    cdp = page.context.new_cdp_session(page)
+    root = cdp.send("DOM.getDocument", {"depth": -1})["root"]["nodeId"]
+    nid = cdp.send("DOM.querySelector",
+                   {"nodeId": root, "selector": 'input[data-testid="fileInput"]'})["nodeId"]
+    cdp.send("DOM.setFileInputFiles", {"files": [str(Path(video).resolve())], "nodeId": nid})
+
+
 def attach_video(page, video):
     log("[media] file size", os.path.getsize(video))
     try:
         log("[diag] avc1 canPlayType:", repr(page.evaluate(AVC_PROBE_JS)))
     except Exception as e:
         log("[diag] canPlayType 失敗", repr(e)[:80])
-    vabs = str(Path(video).resolve())
-    for sel in ('input[data-testid="fileInput"]', 'input[type="file"]'):
-        try:
-            loc = page.locator(sel)
-            if loc.count() == 0:
-                continue
-            try:
-                loc.first.set_input_files(video)
-            except Exception as e:
-                log("[media] set_input_files 例外", sel, repr(e)[:140])
-            n = page.evaluate(FILES_LEN_JS, sel)
-            log("[media] set_input_files", sel, "-> files n:", n)
-            if isinstance(n, int) and n > 0:
-                return True
-        except Exception as e:
-            log("[media] 失敗", sel, repr(e)[:140])
+    # 手段を連続実行すると同じ動画が重複添付されるため、必ず1手段ずつ・成功したら止める
     try:
-        cdp = page.context.new_cdp_session(page)
-        root = cdp.send("DOM.getDocument", {"depth": -1})["root"]["nodeId"]
-        nid = cdp.send("DOM.querySelector",
-                       {"nodeId": root, "selector": 'input[data-testid="fileInput"]'})["nodeId"]
-        if nid:
-            cdp.send("DOM.setFileInputFiles", {"files": [vabs], "nodeId": nid})
-            n = page.evaluate(FILES_LEN_JS, 'input[data-testid="fileInput"]')
-            log("[media] CDP setFileInputFiles -> files n:", n)
-            if isinstance(n, int) and n > 0:
-                return True
+        page.locator('input[data-testid="fileInput"]').first.set_input_files(video)
+        log("[media] set_input_files 実行")
+    except Exception as e:
+        log("[media] set_input_files 例外:", repr(e)[:140])
+    if wait_media(page, timeout=45):
+        return True
+    log("[media] 再試行: CDP DOM.setFileInputFiles")
+    try:
+        _cdp_set(page, video)
     except Exception as e:
         log("[media] CDP 失敗", repr(e)[:160])
-    return False
+    return wait_media(page, timeout=45)
 
 
 def media_diag(page):
@@ -248,14 +240,18 @@ def post_first(page, video, text):
         log("[probe] 添付前DIAG"); media_diag(page)
     fill_composer(page, text)          # 先に本文（コンポーザの取りこぼし防止）
     page.wait_for_timeout(1500)
-    attach_video(page, video)
-    page.wait_for_timeout(2500)
-    ok = wait_media(page, timeout=90)
+    ok = attach_video(page, video)
     log("[media] attached:", ok)
     if not ok:
         media_diag(page)
         shot(page, "media_fail.png")
     if PROBE:
+        try:
+            n = page.evaluate("""() => {const d = document.querySelector('[role="dialog"]') || document;
+              return d.querySelectorAll('[data-testid="attachments"] video, [data-testid="attachments"] img').length;}""")
+            log("[probe] attachments count:", n)
+        except Exception:
+            pass
         shot(page, "probe.png")
         log("[probe] 添付テストのみで終了（投稿しない）")
         return False
