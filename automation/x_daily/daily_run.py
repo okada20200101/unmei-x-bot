@@ -1,31 +1,40 @@
 #!/usr/bin/env python3
 """
 運命の命式 X自動投稿（X APIの従量課金を通さない = ブラウザ操作ルート）
-対象アカウント: @unmei_meishiki_（@iching_kobo とは別アカウント・独立運用）
+対象アカウント: @unmei_meishiki_
 
 流れ:
   1) 素材サーバーから当日の1本(動画URL + 投稿文2本)を取得
-  2) セッション(storage_state)で x.com に入り、動画を添付して1投稿目
+  2) セッション(storage_state)で x.com に入り、本文入力→動画添付→1投稿目
   3) 投稿時に返ってくる tweet id を使い、その投稿へスレッド返信で2投稿目
   4) 成功したら素材サーバーのカーソルを進める
 
 必要な GitHub Secrets:
   X_STORAGE_STATE / POSTS_ENDPOINT / ADVANCE_ENDPOINT / ADVANCE_TOKEN
 
-改訂メモ (2026-10-12):
-  - 投稿欄 tweetTextarea_0 が「モーダル」と「primaryColumn内インライン」の2箇所に
-    存在し strict mode violation になった → JSでモーダル側を明示的に狙う。
-  - 動画待ちは「添付サムネイルの出現」を実シグナルに判定。
-  - スレッド返信は CreateTweet レスポンスの tweet id を捕まえて直接開く方式。
-  - /advance へはブラウザ相当の User-Agent で送る（Cloudflareが Python-urllib を
-    403で弾くため）。
+環境変数:
+  DRY_RUN=1       : 取得のみ（投稿しない）
+  PROBE=1         : 添付テストのみ（投稿しない）
+  REQUIRE_MEDIA=1 : 動画が付かなければ投稿せず中止（カーソル温存）
+
+改訂メモ (2026-10-12 動画添付の修正):
+  - Playwright同梱ChromiumはH.264等の独自コーデックを含まず、動画の前処理が
+    失敗して添付できないことがあるため、実Chrome(channel="chrome")を優先使用。
+    起動できなければ同梱Chromiumに戻す。
+  - 添付は set_input_files 直後に input.files.length を実測。0 の場合は
+    CDP(DOM.setFileInputFiles) で再試行する。
+  - 「uploading」判定から [role=progressbar]（常時存在で誤検知）を撤去し、
+    video要素 / [data-testid=attachments] の出現のみを実シグナルにする。
+  - 本文は添付より先に入力（長時間待機でコンポーザがリセットされる事故を防ぐ）。
 """
 import json, os, sys, time, urllib.request
 from pathlib import Path
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+from playwright.sync_api import sync_playwright
 
 HERE = Path(__file__).resolve().parent
 DRY = os.environ.get("DRY_RUN", "0") == "1"
+PROBE = os.environ.get("PROBE", "0") == "1"
+REQUIRE_MEDIA = os.environ.get("REQUIRE_MEDIA", "0") == "1"
 BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
 
@@ -61,13 +70,23 @@ MEDIA_JS = """
 () => {
   const d = document.querySelector('[role="dialog"]');
   const scope = d || document;
-  if (scope.querySelector('video')) return 'ready';
   const att = scope.querySelector('[data-testid="attachments"]');
-  if (att && att.querySelector('img, video')) return 'ready';
+  if (att && att.querySelector('video, img')) return 'ready';
+  if (scope.querySelector('video')) return 'ready';
   if (att) return 'attached';
-  return scope.querySelector('[role="progressbar"]') ? 'uploading' : 'none';
+  return 'none';
 }
 """
+
+TOAST_JS = """
+() => [...document.querySelectorAll('[data-testid="toast"]')].map(e => e.innerText).join(' || ')
+"""
+
+FILES_LEN_JS = """
+(s) => { const e = document.querySelector(s); return e && e.files ? e.files.length : -1; }
+"""
+
+AVC_PROBE_JS = """() => document.createElement('video').canPlayType('video/mp4; codecs="avc1.42E01E"')"""
 
 CAPTURE = {"id": None}
 
@@ -96,6 +115,18 @@ def download(url, dest):
         f.write(r.read())
 
 
+def launch_browser(p):
+    args = ["--no-sandbox", "--disable-dev-shm-usage", "--autoplay-policy=no-user-gesture-required"]
+    for kw in ({"channel": "chrome"}, {}):
+        try:
+            b = p.chromium.launch(args=args, **kw)
+            log("[browser] launch", "chrome-channel" if kw else "bundled-chromium")
+            return b
+        except Exception as e:
+            log("[warn] launch 失敗", (kw or "chromium"), repr(e)[:140])
+    raise RuntimeError("browser launch failed")
+
+
 def fill_composer(page, text):
     ok = page.evaluate(FOCUS_COMPOSER_JS)
     if not ok:
@@ -104,16 +135,18 @@ def fill_composer(page, text):
     page.keyboard.type(text, delay=8)
 
 
-def wait_media(page, timeout=180):
+def wait_media(page, timeout=90):
     steps = max(1, timeout // 3)
-    for i in range(steps):
+    last = None
+    for _ in range(steps):
         st = page.evaluate(MEDIA_JS)
         if st in ("ready", "attached"):
             log("[media]", st)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000)
             return True
-        if i % 4 == 0:
+        if st != last:
             log("[media]", st)
+            last = st
         page.wait_for_timeout(3000)
     log("[media] timeout (続行)")
     return False
@@ -142,66 +175,95 @@ def on_response(r):
 def attach_video(page, video):
     log("[media] file size", os.path.getsize(video))
     try:
-        btn = page.locator('[aria-label="Add photos or video"], [data-testid="addMedia"]').first
-        btn.wait_for(state="visible", timeout=20000)
-        with page.expect_file_chooser(timeout=20000) as fc:
-            btn.click()
-        fc.value.set_files(video)
-        log("[media] file chooser 経由で添付要求")
-        return True
+        log("[diag] avc1 canPlayType:", repr(page.evaluate(AVC_PROBE_JS)))
     except Exception as e:
-        log("[media] file chooser 失敗:", repr(e)[:160])
+        log("[diag] canPlayType 失敗", repr(e)[:80])
+    vabs = str(Path(video).resolve())
     for sel in ('input[data-testid="fileInput"]', 'input[type="file"]'):
         try:
-            page.set_input_files(sel, video)
-            log("[media] 直接添付要求:", sel)
-            return True
+            loc = page.locator(sel)
+            if loc.count() == 0:
+                continue
+            try:
+                loc.first.set_input_files(video)
+            except Exception as e:
+                log("[media] set_input_files 例外", sel, repr(e)[:140])
+            n = page.evaluate(FILES_LEN_JS, sel)
+            log("[media] set_input_files", sel, "-> files n:", n)
+            if isinstance(n, int) and n > 0:
+                return True
         except Exception as e:
-            log("[media] 失敗:", sel, repr(e)[:120])
+            log("[media] 失敗", sel, repr(e)[:140])
+    try:
+        cdp = page.context.new_cdp_session(page)
+        root = cdp.send("DOM.getDocument", {"depth": -1})["root"]["nodeId"]
+        nid = cdp.send("DOM.querySelector",
+                       {"nodeId": root, "selector": 'input[data-testid="fileInput"]'})["nodeId"]
+        if nid:
+            cdp.send("DOM.setFileInputFiles", {"files": [vabs], "nodeId": nid})
+            n = page.evaluate(FILES_LEN_JS, 'input[data-testid="fileInput"]')
+            log("[media] CDP setFileInputFiles -> files n:", n)
+            if isinstance(n, int) and n > 0:
+                return True
+    except Exception as e:
+        log("[media] CDP 失敗", repr(e)[:160])
     return False
 
 
 def media_diag(page):
     try:
-        log("[media] dialog_text:", page.locator('[role="dialog"]').first.inner_text()[:300].replace("\n", " | "))
+        log("[media] dialog_text:",
+            page.locator('[role="dialog"]').first.inner_text()[:300].replace("\n", " | "))
     except Exception as e:
         log("[media] dialog_text 取得失敗:", repr(e)[:120])
+    try:
+        log("[media] toast:", (page.evaluate(TOAST_JS) or "")[:200])
+    except Exception:
+        pass
     try:
         d = page.evaluate("""() => {
           const r = document.querySelector('[role="dialog"]') || document;
           return {videos: r.querySelectorAll('video').length,
-                  inputs: [...r.querySelectorAll('input')].map(e => ({t: e.type, tid: e.getAttribute('data-testid'), ac: e.accept, hid: !(e.offsetWidth||e.offsetHeight), n: e.files ? e.files.length : -1})),
-                  tids: [...r.querySelectorAll('[data-testid]')].map(e => e.getAttribute('data-testid')).slice(0, 70)};
+                  atts: r.querySelectorAll('[data-testid="attachments"]').length,
+                  inputs: [...r.querySelectorAll('input')].map(e => ({t: e.type, tid: e.getAttribute('data-testid'), ac: e.accept, hid: !(e.offsetWidth||e.offsetHeight), n: e.files ? e.files.length : -1}))};
         }""")
-        log("[dump] videos", d.get("videos"))
+        log("[dump] videos", d.get("videos"), "atts", d.get("atts"))
         log("[dump] inputs", json.dumps(d.get("inputs"), ensure_ascii=False)[:700])
-        log("[dump] testids", json.dumps(d.get("tids"), ensure_ascii=False)[:1400])
     except Exception as e:
         log("[dump] 失敗:", repr(e)[:200])
+
+
+def shot(page, name):
+    try:
+        page.screenshot(path=str(HERE / name))
+        log("[shot]", name)
+    except Exception as e:
+        log("[shot] 失敗", name, repr(e)[:80])
 
 
 def post_first(page, video, text):
     page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
     page.wait_for_timeout(6000)
-    if os.environ.get("PROBE") == "1":
+    if PROBE:
         log("[probe] 添付前DIAG"); media_diag(page)
+    fill_composer(page, text)          # 先に本文（コンポーザの取りこぼし防止）
+    page.wait_for_timeout(1500)
     attach_video(page, video)
-    page.wait_for_timeout(4000)
-    ok = wait_media(page, timeout=240)
+    page.wait_for_timeout(2500)
+    ok = wait_media(page, timeout=90)
     log("[media] attached:", ok)
     if not ok:
         media_diag(page)
-        try:
-            page.screenshot(path=str(HERE / "media_fail.png"))
-        except Exception:
-            pass
-    if os.environ.get("PROBE") == "1":
+        shot(page, "media_fail.png")
+    if PROBE:
+        shot(page, "probe.png")
         log("[probe] 添付テストのみで終了（投稿しない）")
         return False
-    fill_composer(page, text)
-    page.wait_for_timeout(1500)
+    if REQUIRE_MEDIA and not ok:
+        log("[media] REQUIRE_MEDIA=1 のため投稿せず中止（カーソル温存）")
+        return False
     click_post(page)
-    page.wait_for_timeout(10000)
+    page.wait_for_timeout(12000)
     return True
 
 
@@ -228,10 +290,11 @@ def main():
     import hashlib
     _tk = os.environ.get("ADVANCE_TOKEN", "")
     log("[diag] token_len", len(_tk), "token_sha", hashlib.sha256(_tk.encode()).hexdigest()[:16])
+    log("[diag] flags PROBE", PROBE, "REQUIRE_MEDIA", REQUIRE_MEDIA, "DRY", DRY)
 
     state = os.environ.get("X_STORAGE_STATE")
     if not state:
-        log("[skip] X_STORAGE_STATE 未設定（@unmei_meishiki_ のCookieをSecretに登録してください）")
+        log("[skip] X_STORAGE_STATE 未設定")
         return 0
     (HERE / "storage_state.json").write_text(state, encoding="utf-8")
 
@@ -246,7 +309,7 @@ def main():
         return 0
 
     with sync_playwright() as p:
-        b = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+        b = launch_browser(p)
         ctx = b.new_context(storage_state=str(HERE / "storage_state.json"),
                             viewport={"width": 1360, "height": 960},
                             locale="ja-JP", timezone_id="Asia/Tokyo")
@@ -265,10 +328,7 @@ def main():
             log("[post1] 実行")
         except Exception as e:
             log("[error] 1投稿目に失敗:", repr(e)[:300])
-            try:
-                page.screenshot(path=str(HERE / "err_post1.png"))
-            except Exception:
-                pass
+            shot(page, "err_post1.png")
             return 1
 
         try:
