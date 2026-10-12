@@ -139,20 +139,58 @@ def on_response(r):
         pass
 
 
+def attach_video(page, video):
+    log("[media] file size", os.path.getsize(video))
+    try:
+        btn = page.locator('[aria-label="Add photos or video"], [data-testid="addMedia"]').first
+        btn.wait_for(state="visible", timeout=20000)
+        with page.expect_file_chooser(timeout=20000) as fc:
+            btn.click()
+        fc.value.set_files(video)
+        log("[media] file chooser 経由で添付要求")
+        return True
+    except Exception as e:
+        log("[media] file chooser 失敗:", repr(e)[:160])
+    for sel in ('input[data-testid="fileInput"]', 'input[type="file"]'):
+        try:
+            page.set_input_files(sel, video)
+            log("[media] 直接添付要求:", sel)
+            return True
+        except Exception as e:
+            log("[media] 失敗:", sel, repr(e)[:120])
+    return False
+
+
+def media_diag(page):
+    try:
+        log("[media] dialog_text:", page.locator('[role="dialog"]').first.inner_text()[:400].replace("\n", " | "))
+    except Exception as e:
+        log("[media] dialog_text 取得失敗:", repr(e)[:100])
+    log("[media] video_el:", page.evaluate("() => document.querySelectorAll('video').length"),
+        "attachments:", page.evaluate("() => document.querySelectorAll('[data-testid=\'attachments\']').length"))
+
+
 def post_first(page, video, text):
     page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
+    page.wait_for_timeout(6000)
+    attach_video(page, video)
     page.wait_for_timeout(4000)
-    try:
-        page.set_input_files('input[data-testid="fileInput"]', video)
-    except Exception as e:
-        log("[media] fileInput指定をフォールバック:", repr(e)[:120])
-        page.set_input_files('input[type="file"]', video)
-    page.wait_for_timeout(3000)
-    log('[media] attached:', wait_media(page, timeout=300))
+    ok = wait_media(page, timeout=240)
+    log("[media] attached:", ok)
+    if not ok:
+        media_diag(page)
+        try:
+            page.screenshot(path=str(HERE / "media_fail.png"))
+        except Exception:
+            pass
+    if os.environ.get("PROBE") == "1":
+        log("[probe] 添付テストのみで終了（投稿しない）")
+        return False
     fill_composer(page, text)
     page.wait_for_timeout(1500)
     click_post(page)
     page.wait_for_timeout(10000)
+    return True
 
 
 def post_reply(page, handle, text):
@@ -209,7 +247,9 @@ def main():
             return 1
 
         try:
-            post_first(page, video, item["post1"])
+            if not post_first(page, video, item["post1"]):
+                log("[probe] 終了")
+                ctx.close(); b.close(); return 0
             log("[post1] 実行")
         except Exception as e:
             log("[error] 1投稿目に失敗:", repr(e)[:300])
