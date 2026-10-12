@@ -6,7 +6,7 @@
 流れ:
   1) 素材サーバーから当日の1本(動画URL + 投稿文2本)を取得
   2) セッション(storage_state)で x.com に入り、動画を添付して1投稿目
-  3) プロフィールの最新ポストを開き、返信ボタンから2投稿目（スレッド）
+  3) 投稿時に返ってくる tweet id を使い、その投稿へスレッド返信で2投稿目
   4) 成功したら素材サーバーのカーソルを進める
 
 必要な GitHub Secrets:
@@ -14,9 +14,11 @@
 
 改訂メモ (2026-10-12):
   - 投稿欄 tweetTextarea_0 が「モーダル」と「primaryColumn内インライン」の2箇所に
-    存在し strict mode violation になったため、モーダル側を JS で明示的に狙う。
-  - 動画待ちは「添付サムネイルの出現」を実シグナルとして判定（progressbar誤検知対策）。
-  - スレッド返信はプロフィールの最新ツイートの返信ボタンから行う方式に変更。
+    存在し strict mode violation になった → JSでモーダル側を明示的に狙う。
+  - 動画待ちは「添付サムネイルの出現」を実シグナルに判定。
+  - スレッド返信は CreateTweet レスポンスの tweet id を捕まえて直接開く方式。
+  - /advance へはブラウザ相当の User-Agent で送る（Cloudflareが Python-urllib を
+    403で弾くため）。
 """
 import json, os, sys, time, urllib.request
 from pathlib import Path
@@ -24,6 +26,8 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 HERE = Path(__file__).resolve().parent
 DRY = os.environ.get("DRY_RUN", "0") == "1"
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
 
 FOCUS_COMPOSER_JS = """
 () => {
@@ -64,19 +68,29 @@ MEDIA_JS = """
 }
 """
 
+CAPTURE = {"id": None}
+
 
 def log(*a):
     print(*a, flush=True)
 
 
+def http_post(url, token):
+    req = urllib.request.Request(url, method="POST", data=b"",
+                                 headers={"User-Agent": BROWSER_UA, "x-token": token,
+                                          "Content-Type": "application/json", "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read().decode()
+
+
 def fetch_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "unmei-bot"})
+    req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA, "Accept": "*/*"})
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.load(r)
 
 
 def download(url, dest):
-    req = urllib.request.Request(url, headers={"User-Agent": "unmei-bot"})
+    req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
     with urllib.request.urlopen(req, timeout=180) as r, open(dest, "wb") as f:
         f.write(r.read())
 
@@ -90,7 +104,6 @@ def fill_composer(page, text):
 
 
 def wait_media(page, timeout=180):
-    """添付サムネイル(img/video)の出現を待つ。出れば完了。"""
     steps = max(1, timeout // 3)
     for i in range(steps):
         st = page.evaluate(MEDIA_JS)
@@ -111,6 +124,20 @@ def click_post(page):
         page.locator('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]').first.click()
 
 
+def on_response(r):
+    try:
+        if "CreateTweet" in r.url and r.request.method == "POST":
+            j = r.json()
+            res = (j.get("data", {}).get("create_tweet", {})
+                    .get("tweet_results", {}).get("result", {}))
+            rid = res.get("rest_id") or (res.get("tweet") or {}).get("rest_id")
+            if rid:
+                CAPTURE["id"] = rid
+                log("[capture] tweet id", rid)
+    except Exception:
+        pass
+
+
 def post_first(page, video, text):
     page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
     page.wait_for_timeout(4000)
@@ -124,19 +151,18 @@ def post_first(page, video, text):
 
 
 def post_reply(page, handle, text):
-    """プロフィールの最新ポストを開き、返信ボタンからスレッド2投目"""
-    page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded")
+    rid = CAPTURE.get("id")
+    if not rid:
+        raise RuntimeError("tweet id を取得できず（CreateTweet捕捉失敗）")
+    page.goto(f"https://x.com/{handle}/status/{rid}", wait_until="domcontentloaded")
+    page.wait_for_timeout(6000)
     try:
-        page.wait_for_selector('article[data-testid="tweet"]', timeout=45000)
-    except PWTimeout:
-        log("[reply] 再読込")
-        page.goto(f"https://x.com/{handle}", wait_until="load")
-        page.wait_for_selector('article[data-testid="tweet"]', timeout=45000)
-    page.wait_for_timeout(2500)
-    rb = page.locator('article[data-testid="tweet"] [data-testid="reply"]').first
-    rb.wait_for(state="visible", timeout=20000)
-    rb.click()
-    page.wait_for_timeout(3500)
+        rb = page.locator('[data-testid="reply"]').first
+        rb.wait_for(state="visible", timeout=20000)
+        rb.click()
+        page.wait_for_timeout(3500)
+    except Exception as e:
+        log("[reply] 返信ボタン操作をスキップ:", repr(e)[:120])
     fill_composer(page, text)
     page.wait_for_timeout(1200)
     click_post(page)
@@ -146,9 +172,8 @@ def post_reply(page, handle, text):
 def main():
     import hashlib
     _tk = os.environ.get("ADVANCE_TOKEN", "")
-    _ep = os.environ.get("ADVANCE_ENDPOINT", "")
-    log("[diag] token_len", len(_tk), "token_sha", hashlib.sha256(_tk.encode()).hexdigest()[:16],
-        "ep_len", len(_ep), "ep_tail", _ep[-12:])
+    log("[diag] token_len", len(_tk), "token_sha", hashlib.sha256(_tk.encode()).hexdigest()[:16])
+
     state = os.environ.get("X_STORAGE_STATE")
     if not state:
         log("[skip] X_STORAGE_STATE 未設定（@unmei_meishiki_ のCookieをSecretに登録してください）")
@@ -171,6 +196,7 @@ def main():
                             viewport={"width": 1360, "height": 960},
                             locale="ja-JP", timezone_id="Asia/Tokyo")
         page = ctx.new_page()
+        page.on("response", on_response)
         page.goto("https://x.com/home", wait_until="domcontentloaded")
         page.wait_for_timeout(5000)
         if "i/flow/login" in page.url or page.url.rstrip("/").endswith("/login"):
@@ -200,11 +226,8 @@ def main():
     adv = os.environ.get("ADVANCE_ENDPOINT")
     if adv:
         for attempt in range(4):
-            req = urllib.request.Request(adv, method="POST",
-                                         headers={"x-token": os.environ.get("ADVANCE_TOKEN", "")})
             try:
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    log("[advance]", r.read().decode()[:120])
+                log("[advance]", http_post(adv, os.environ.get("ADVANCE_TOKEN", ""))[:120])
                 break
             except Exception as e:
                 log("[warn] advance失敗", attempt + 1, repr(e)[:120])
