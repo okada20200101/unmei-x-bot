@@ -163,16 +163,28 @@ def attach_video(page, video):
 
 def media_diag(page):
     try:
-        log("[media] dialog_text:", page.locator('[role="dialog"]').first.inner_text()[:400].replace("\n", " | "))
+        log("[media] dialog_text:", page.locator('[role="dialog"]').first.inner_text()[:300].replace("\n", " | "))
     except Exception as e:
-        log("[media] dialog_text 取得失敗:", repr(e)[:100])
-    log("[media] video_el:", page.evaluate("() => document.querySelectorAll('video').length"),
-        "attachments:", page.evaluate("() => document.querySelectorAll('[data-testid=\'attachments\']').length"))
+        log("[media] dialog_text 取得失敗:", repr(e)[:120])
+    try:
+        d = page.evaluate("""() => {
+          const r = document.querySelector('[role="dialog"]') || document;
+          return {videos: r.querySelectorAll('video').length,
+                  inputs: [...r.querySelectorAll('input')].map(e => ({t: e.type, tid: e.getAttribute('data-testid'), ac: e.accept, hid: !(e.offsetWidth||e.offsetHeight), n: e.files ? e.files.length : -1})),
+                  tids: [...r.querySelectorAll('[data-testid]')].map(e => e.getAttribute('data-testid')).slice(0, 70)};
+        }""")
+        log("[dump] videos", d.get("videos"))
+        log("[dump] inputs", json.dumps(d.get("inputs"), ensure_ascii=False)[:700])
+        log("[dump] testids", json.dumps(d.get("tids"), ensure_ascii=False)[:1400])
+    except Exception as e:
+        log("[dump] 失敗:", repr(e)[:200])
 
 
 def post_first(page, video, text):
     page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
     page.wait_for_timeout(6000)
+    if os.environ.get("PROBE") == "1":
+        log("[probe] 添付前DIAG"); media_diag(page)
     attach_video(page, video)
     page.wait_for_timeout(4000)
     ok = wait_media(page, timeout=240)
