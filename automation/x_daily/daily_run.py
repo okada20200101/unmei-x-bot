@@ -6,7 +6,7 @@
 流れ:
   1) 素材サーバーから当日の1本(動画URL + 投稿文2本)を取得
   2) セッション(storage_state)で x.com に入り、動画を添付して1投稿目
-  3) 投稿したポストを開いて2投稿目をスレッド返信
+  3) プロフィールの最新ポストを開き、返信ボタンから2投稿目（スレッド）
   4) 成功したら素材サーバーのカーソルを進める
 
 必要な GitHub Secrets:
@@ -15,9 +15,10 @@
 改訂メモ (2026-10-12):
   - 投稿欄 tweetTextarea_0 が「モーダル」と「primaryColumn内インライン」の2箇所に
     存在し strict mode violation になったため、モーダル側を JS で明示的に狙う。
-  - 動画アップロードの待ちを延長し、投稿後にポストURLを取得して返信する方式に変更。
+  - 動画待ちは「添付サムネイルの出現」を実シグナルとして判定（progressbar誤検知対策）。
+  - スレッド返信はプロフィールの最新ツイートの返信ボタンから行う方式に変更。
 """
-import json, os, sys, urllib.request
+import json, os, sys, time, urllib.request
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -52,25 +53,14 @@ CLICK_POST_JS = """
 }
 """
 
-UPLOAD_STATE_JS = """
+MEDIA_JS = """
 () => {
   const d = document.querySelector('[role="dialog"]');
-  if (!d) return 'nodialog';
-  if (d.querySelector('[role="progressbar"]')) return 'uploading';
-  const b = d.querySelector('[data-testid="tweetButton"]');
-  if (!b) return 'nobtn';
-  return b.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'ready';
-}
-"""
-
-LATEST_URL_JS = """
-() => {
-  const links = [...document.querySelectorAll('a[href*="/status/"]')];
-  for (const a of links) {
-    const h = a.getAttribute('href') || '';
-    if (/^\\/[A-Za-z0-9_]+\\/status\\/\\d+$/.test(h)) return h;
-  }
-  return null;
+  const scope = d || document;
+  const att = scope.querySelector('[data-testid="attachments"]');
+  if (att && att.querySelector('img, video')) return 'ready';
+  if (att) return 'attached';
+  return scope.querySelector('[role="progressbar"]') ? 'uploading' : 'none';
 }
 """
 
@@ -99,18 +89,19 @@ def fill_composer(page, text):
     page.keyboard.type(text, delay=8)
 
 
-def wait_upload(page, timeout=300):
-    """動画アップロード完了（progressbar消滅 & 投稿ボタン有効）を待つ"""
+def wait_media(page, timeout=180):
+    """添付サムネイル(img/video)の出現を待つ。出れば完了。"""
     steps = max(1, timeout // 3)
     for i in range(steps):
-        st = page.evaluate(UPLOAD_STATE_JS)
-        if st == "ready":
-            log("[upload] ready")
+        st = page.evaluate(MEDIA_JS)
+        if st in ("ready", "attached"):
+            log("[media]", st)
+            page.wait_for_timeout(2000)
             return True
-        if i % 5 == 0:
-            log("[upload]", st)
+        if i % 4 == 0:
+            log("[media]", st)
         page.wait_for_timeout(3000)
-    log("[upload] timeout (続行)")
+    log("[media] timeout (続行)")
     return False
 
 
@@ -120,36 +111,32 @@ def click_post(page):
         page.locator('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]').first.click()
 
 
-def latest_post_url(page, handle, tries=10):
-    for i in range(tries):
-        try:
-            page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded")
-            page.wait_for_timeout(5000)
-            href = page.evaluate(LATEST_URL_JS)
-            if href:
-                log("[latest]", href)
-                return href
-        except Exception as e:
-            log("[latest] retry", i, repr(e)[:120])
-        page.wait_for_timeout(4000)
-    return None
-
-
 def post_first(page, video, text):
     page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
     page.wait_for_timeout(4000)
     page.set_input_files('input[type="file"]', video)
-    page.wait_for_timeout(4000)
+    page.wait_for_timeout(3000)
+    wait_media(page, timeout=180)
     fill_composer(page, text)
-    wait_upload(page, timeout=300)
     page.wait_for_timeout(1500)
     click_post(page)
     page.wait_for_timeout(10000)
 
 
-def post_reply(page, url, text):
-    page.goto("https://x.com" + url, wait_until="domcontentloaded")
-    page.wait_for_timeout(6000)
+def post_reply(page, handle, text):
+    """プロフィールの最新ポストを開き、返信ボタンからスレッド2投目"""
+    page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded")
+    try:
+        page.wait_for_selector('article[data-testid="tweet"]', timeout=45000)
+    except PWTimeout:
+        log("[reply] 再読込")
+        page.goto(f"https://x.com/{handle}", wait_until="load")
+        page.wait_for_selector('article[data-testid="tweet"]', timeout=45000)
+    page.wait_for_timeout(2500)
+    rb = page.locator('article[data-testid="tweet"] [data-testid="reply"]').first
+    rb.wait_for(state="visible", timeout=20000)
+    rb.click()
+    page.wait_for_timeout(3500)
     fill_composer(page, text)
     page.wait_for_timeout(1200)
     click_post(page)
@@ -185,26 +172,20 @@ def main():
             log("[error] セッションが無効（cookie期限切れ）→ Cookieを再取得してSecretを更新")
             return 1
 
-        # --- 1投稿目（動画つき） ---
         try:
             post_first(page, video, item["post1"])
             log("[post1] 実行")
         except Exception as e:
-            log("[error] 1投稿目に失敗:", repr(e))
+            log("[error] 1投稿目に失敗:", repr(e)[:300])
             try:
                 page.screenshot(path=str(HERE / "err_post1.png"))
             except Exception:
                 pass
             return 1
 
-        # --- 2投稿目（スレッド返信） ---
         try:
-            url = latest_post_url(page, handle)
-            if url:
-                post_reply(page, url, item["post2"])
-                log("[post2] 実行 ->", url)
-            else:
-                log("[warn] 返信対象のポストURLを取得できず（スレッド2投目はスキップ）")
+            post_reply(page, handle, item["post2"])
+            log("[post2] 実行")
         except Exception as e:
             log("[warn] スレッド返信に失敗:", repr(e)[:200])
 
@@ -213,7 +194,7 @@ def main():
 
     adv = os.environ.get("ADVANCE_ENDPOINT")
     if adv:
-        for attempt in range(3):
+        for attempt in range(4):
             req = urllib.request.Request(adv, method="POST",
                                          headers={"x-token": os.environ.get("ADVANCE_TOKEN", "")})
             try:
@@ -222,7 +203,6 @@ def main():
                 break
             except Exception as e:
                 log("[warn] advance失敗", attempt + 1, repr(e)[:120])
-                import time
                 time.sleep(5)
     return 0
 
