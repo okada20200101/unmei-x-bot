@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 
 # --- WAIT_UNTIL: 例 "05:00" が渡されたら、その時刻(JST)まで待ってから投稿 ---
 if [ -n "${WAIT_UNTIL:-}" ]; then
-  python3 - "$WAIT_UNTIL" <<'PYEOF'
+  python3 - "$WAIT_UNTIL" <<'PYEOF' 2>&1 | tee -a last_run.log
 import sys, time, datetime
 hh, mm = [int(x) for x in sys.argv[1].split(":")]
 jst = datetime.timezone(datetime.timedelta(hours=9))
