@@ -3,8 +3,8 @@ name: X daily post (unmei / @unmei_meishiki_)
 # 毎朝 5:00 JST = 20:00 UTC（前日）。JST = UTC+9。
 # 対象アカウント: @unmei_meishiki_（@iching_kobo とは別アカウント・完全独立）
 on:
-  schedule:
-    - cron: "0 20 * * *"
+  # GitHub の schedule は 2〜5時間遅延して 05:00 JST に間に合わないため廃止。
+  # 代わりに Cloudflare Cron（unmei-x-trigger）が 20:00 UTC に workflow_dispatch する。
   workflow_dispatch:
     inputs:
       dry_run:
