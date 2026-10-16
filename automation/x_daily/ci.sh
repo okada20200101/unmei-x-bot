@@ -2,12 +2,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# --- 二重投稿ガード: 今日(JST)すでに投稿済みなら何もしない ---
-if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ]; then
-  if curl -fsS --max-time 20 "https://unmei-x-trigger.t-okada-a39.workers.dev/posted_today" | grep -q '"posted":true'; then
-    echo "[skip] already posted today (JST)"
-    exit 0
-  fi
+# --- 二重投稿ガード: 直近30分に別の実行があれば skip ---
+if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+  SINCE=$(date -u -d '-30 minutes' +%Y-%m-%dT%H:%M:%SZ)
+  OTHER=$(curl -fsS --max-time 20 -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?created=%3E%3D${SINCE}&per_page=30" \
+    | python3 -c "import sys,json,os;cur=os.environ.get('GITHUB_RUN_ID');d=json.load(sys.stdin);print(' '.join(str(x['id']) for x in d.get('workflow_runs',[]) if str(x['id'])!=cur))" 2>/dev/null || true)
+  if [ -n "$OTHER" ]; then echo "[skip] another run within 30min: $OTHER"; exit 0; fi
 fi
 python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
 python3 -m playwright install --with-deps chromium
