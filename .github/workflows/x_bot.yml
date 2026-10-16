@@ -16,6 +16,9 @@ on:
       require_media:
         description: "1 = 動画が付かなければ投稿せず中止"
         default: "0"
+      wait_until:
+        description: "HH:MM (JST) その時刻まで待ってから投稿。例 05:00"
+        default: ""
 
 concurrency:
   group: x-daily
@@ -44,6 +47,7 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           PROBE: ${{ github.event.inputs.probe || '0' }}
           REQUIRE_MEDIA: ${{ github.event.inputs.require_media || '0' }}
+          WAIT_UNTIL: ${{ github.event.inputs.wait_until || '' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash automation/x_daily/ci.sh
       - name: Upload log & state
