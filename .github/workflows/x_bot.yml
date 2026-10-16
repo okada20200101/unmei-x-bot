@@ -21,6 +21,10 @@ concurrency:
   group: x-daily
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   post:
     runs-on: ubuntu-latest
@@ -40,6 +44,7 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
           PROBE: ${{ github.event.inputs.probe || '0' }}
           REQUIRE_MEDIA: ${{ github.event.inputs.require_media || '0' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash automation/x_daily/ci.sh
       - name: Upload log & state
         if: always()
