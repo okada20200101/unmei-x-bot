@@ -2,6 +2,22 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# --- WAIT_UNTIL: 例 "05:00" が渡されたら、その時刻(JST)まで待ってから投稿 ---
+if [ -n "${WAIT_UNTIL:-}" ]; then
+  python3 - "$WAIT_UNTIL" <<'PYEOF'
+import sys, time, datetime
+hh, mm = [int(x) for x in sys.argv[1].split(":")]
+jst = datetime.timezone(datetime.timedelta(hours=9))
+now = datetime.datetime.now(jst)
+target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+d = (target - now).total_seconds()
+if d > 0:
+    print("[wait] %.0fs until %s JST" % (d, sys.argv[1]), flush=True)
+    time.sleep(d)
+print("[wait] start at", datetime.datetime.now(jst).strftime("%Y-%m-%d %H:%M:%S JST"), flush=True)
+PYEOF
+fi
+
 # --- 二重投稿ガード: 直近30分に別の実行があれば skip ---
 if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
   SINCE=$(date -u -d '-30 minutes' +%Y-%m-%dT%H:%M:%SZ)
