@@ -23,13 +23,15 @@ name: x daily post (unmei / @unmei_meishiki_)
 
 on:
   schedule:
-    # 【遅延補正】GitHub の schedule は 2時間41分〜5時間39分 遅れて起動する
-    # （実測: 10/13 +5h39m / 10/14 +3h28m / 10/15 +2h41m / 10/16 +2h42m）。
-    # 目標 05:00 JST に対し、平均 3時間37分 の遅延を見込んで
-    # 01:30 JST (= 16:30 UTC 前日) に仕掛ける → 実起動は 04:11〜07:09 JST。
-    - cron: "30 16 * * *"
-    # 保険: 上の実行が落ちた/起動しなかった場合のみ動く（通常はマーカーで skip）
-    - cron: "0 19 * * *"
+    # 【役割分担】5:00 JST の本線は Cloudflare Cron (unmei-x-trigger)。
+    #   → 実測: 20:00 UTC ちょうどに workflow_dispatch が飛んでいる（10/17,10/18）。
+    # ここは「Cloudflare が死んだ時だけ」動く保険。本線より後に置くこと。
+    #   GitHub の schedule は実測 +2h41m〜+5h39m 遅れる。
+    #   19:30 UTC (04:30 JST) 仕掛け → 実起動 07:11〜10:09 JST（本線の後）
+    #   21:30 UTC (06:30 JST) 仕掛け → 実起動 09:11〜12:09 JST（二段目の保険）
+    # 通常はマーカーガードで skip するので、投稿は 5:00 の1本だけ。
+    - cron: "30 19 * * *"
+    - cron: "30 21 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
