@@ -1,0 +1,22 @@
+name: guard race test
+
+# ci.sh が使う claim.sh を「完全に同時」に2本走らせ、WON が必ず1本だけになることを実証する。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash automation/x_daily/claim.sh test:race
+  b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash automation/x_daily/claim.sh test:race
