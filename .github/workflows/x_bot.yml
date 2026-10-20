@@ -23,14 +23,16 @@ name: x daily post (unmei / @unmei_meishiki_)
 
 on:
   schedule:
-    # 【役割分担】5:00 JST の本線は Cloudflare Cron (unmei-x-trigger)。
-    #   → 実測: 20:00 UTC ちょうどに workflow_dispatch が飛んでいる（10/17,10/18）。
-    # ここは「Cloudflare が死んだ時だけ」動く保険。本線より後に置くこと。
-    #   GitHub の schedule は実測 +2h41m〜+5h39m 遅れる。
-    #   19:30 UTC (04:30 JST) 仕掛け → 実起動 07:11〜10:09 JST（本線の後）
-    #   21:30 UTC (06:30 JST) 仕掛け → 実起動 09:11〜12:09 JST（二段目の保険）
-    # 通常はマーカーガードで skip するので、投稿は 5:00 の1本だけ。
-    - cron: "30 19 * * *"
+    # 5:00 JST (20:00 UTC) に「必ず」投稿するための二重化。どちらか早く来た方が 05:00 まで待って投稿する。
+    #
+    # 実測した GitHub schedule の遅延: +2h41m 〜 +5h39m（平均 +3h37m）。
+    #   16:00 UTC (01:00 JST) 仕掛け → 起動 18:41〜21:39 UTC（03:41〜06:39 JST）
+    #     → 05:00 より前に起動すれば WAIT_UNTIL で 05:00 まで待機＝ちょうど5:00に投稿
+    #   Cloudflare Cron (unmei-x-trigger) は別系統で 19:50/20:00 UTC に叩く（PAT使用）
+    #   → 3系統のどれが先に来ても、5:00 に1本だけ。
+    #
+    # 21:30 UTC は最終保険。ここまで来る＝両方が落ちた時だけ（07:00頃投稿）。
+    - cron: "0 16 * * *"
     - cron: "30 21 * * *"
   workflow_dispatch:
     inputs:
@@ -58,7 +60,7 @@ permissions:
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 340
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
