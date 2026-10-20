@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
+TODAY=$(TZ=Asia/Tokyo date +%F)
 
 # --- WAIT_UNTIL: "05:00" が渡されたら、その時刻(JST)まで待ってから投稿 ---
 # 早く起動した実行はここで待つ。5:00 を過ぎて起動した場合は待たずに即投稿。
@@ -48,4 +49,20 @@ if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -n "${GITHUB_RUN_
   echo "[guard2] クレーム獲得 → 投稿へ"
 fi
 
+set +e
 python3 daily_run.py 2>&1 | tee -a last_run.log
+RC=${PIPESTATUS[0]}
+set -e
+
+# 投稿前に失敗した場合だけクレームを返却する（投稿済みなら返却しない＝二重投稿を防ぐ）
+if [ "$RC" -ne 0 ]; then
+  if grep -q "\[capture\] tweet id" last_run.log; then
+    echo "[guard2] 失敗だが投稿は成立 → クレーム保持（再投稿しない）"
+  else
+    echo "[guard2] 投稿前に失敗 → クレームを返却"
+    git rm -q --ignore-unmatch "automation/x_daily/claims/${TODAY}.lock" || true
+    git commit -q -m "release claim ${TODAY} (failed before post)" || true
+    git push origin HEAD:main -q || true
+  fi
+fi
+exit "$RC"
