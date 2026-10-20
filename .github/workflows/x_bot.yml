@@ -75,6 +75,8 @@ jobs:
         id: guard
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          # どのトリガーが先に来ても 05:00 JST ちょうどに揃える（ci.sh が待機）
+          WAIT_UNTIL: "05:00"
           PROBE: ${{ github.event.inputs.probe || '0' }}
         run: |
           set -euo pipefail
@@ -122,6 +124,8 @@ jobs:
           ADVANCE_ENDPOINT: ${{ secrets.ADVANCE_ENDPOINT }}
           ADVANCE_TOKEN: ${{ secrets.ADVANCE_TOKEN }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          # どのトリガーが先に来ても 05:00 JST ちょうどに揃える（ci.sh が待機）
+          WAIT_UNTIL: "05:00"
           PROBE: ${{ github.event.inputs.probe || '0' }}
           REQUIRE_MEDIA: ${{ github.event.inputs.require_media || '0' }}
         run: bash automation/x_daily/ci.sh
