@@ -126,7 +126,7 @@ jobs:
           git config user.name  "x-bot"
           git config user.email "x-bot@users.noreply.github.com"
           touch automation/x_daily/history.jsonl
-          git add -A "$F" automation/x_daily/last_trigger.txt automation/x_daily/history.jsonl STATUS.md
+          git add -A automation/x_daily STATUS.md
           git commit -m "post $(cat "$F")" || echo "no changes"
           git pull --rebase --autostash || true
           git push
