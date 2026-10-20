@@ -1,1 +1,1 @@
-2026-10-20 workflow_dispatch
+2026-10-21 schedule
