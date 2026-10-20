@@ -47,7 +47,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
@@ -60,37 +60,35 @@ jobs:
         with:
           python-version: "3.12"
 
-      # ---- 二重投稿ガード ----
-      # Cloudflare Cron が先に投稿していたら、schedule 側は黙って降りる。
-      # /today の URL から /diag を導出して last_served_at を見る。
-      - name: Duplicate guard (already served today?)
+      # ---- 二重投稿ガード（リポジトリ内マーカー方式）----
+      # 投稿に成功したら automation/x_daily/last_post.txt に JST の日付を
+      # コミットする。次の実行はそれを見て、同じ日なら黙って降りる。
+      # Worker の /diag に依存しないので、Worker 側が何であれ確実に効く。
+      # 副次効果: 毎日コミットが入るため、60日無活動で schedule が
+      #           自動停止する GitHub の仕様も回避できる。
+      - name: Duplicate guard (already posted today?)
         id: guard
         env:
-          POSTS_ENDPOINT: ${{ secrets.POSTS_ENDPOINT }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+          PROBE: ${{ github.event.inputs.probe || '0' }}
         run: |
           set -euo pipefail
-          if [ "$DRY_RUN" = "1" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "dry_run のためガードを素通り"
-            exit 0
-          fi
-          if [ -z "${POSTS_ENDPOINT:-}" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "POSTS_ENDPOINT 未設定のためガードを素通り"
-            exit 0
-          fi
-          DIAG="${POSTS_ENDPOINT%/today}/diag"
-          RESP=$(curl -sS --max-time 30 "$DIAG" || echo '{}')
-          echo "diag: $RESP"
-          LAST=$(printf '%s' "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("last_served_at") or "")' 2>/dev/null || echo "")
           TODAY=$(TZ=Asia/Tokyo date +%F)
-          if [ -n "$LAST" ] && [ "${LAST:0:10}" = "$TODAY" ]; then
+          F=automation/x_daily/last_post.txt
+          LAST=""
+          if [ -f "$F" ]; then LAST=$(tr -d '[:space:]' < "$F"); fi
+          echo "marker=${LAST:-<none>} today=$TODAY"
+          if [ "$DRY_RUN" = "1" ] || [ "$PROBE" = "1" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "dry_run/probe のためガードを素通り"
+            exit 0
+          fi
+          if [ "$LAST" = "$TODAY" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "本日 ($TODAY) はすでに配信済み ($LAST) → スキップ"
+            echo "本日 ($TODAY) は投稿済み → スキップ"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "未配信 (last=$LAST) → 実行する"
+            echo "未投稿 (marker=${LAST:-none}) → 実行する"
           fi
 
       # wait_until 指定時はその時刻まで待つ（Cloudflare 経由の呼び出しと互換）
@@ -110,6 +108,7 @@ jobs:
           fi
 
       - name: Run daily poster
+        id: post
         if: steps.guard.outputs.skip != 'true'
         env:
           TZ: Asia/Tokyo
@@ -131,3 +130,20 @@ jobs:
             automation/x_daily/state.json
             automation/x_daily/last_run.log
           if-no-files-found: ignore
+
+      # ---- 投稿済みマーカーを記録 ----
+      # 実際に投稿できた時だけ日付を書いてコミットする。
+      # dry_run / probe / 失敗時は書かない（＝翌日もきちんと投稿される）。
+      - name: Mark as posted
+        if: success() && steps.guard.outputs.skip != 'true' && steps.post.outcome == 'success' && github.event.inputs.dry_run != '1' && github.event.inputs.probe != '1'
+        run: |
+          set -euo pipefail
+          F=automation/x_daily/last_post.txt
+          TZ=Asia/Tokyo date +%F > "$F"
+          echo "marker -> $(cat "$F")"
+          git config user.name  "x-bot"
+          git config user.email "x-bot@users.noreply.github.com"
+          git add "$F"
+          if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
+          git commit -m "x_daily: 投稿済みマーカー $(cat "$F")"
+          git push origin HEAD:main
