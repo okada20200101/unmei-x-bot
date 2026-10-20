@@ -37,7 +37,12 @@ def write_status(rows):
     L += ["## 直近の投稿", "", "| 日付 | 命式 | 偉人 | 十干 | 発火元 |", "|---|---|---|---|---|"]
     for r in rows[-14:][::-1]:
         L.append(f"| {r['date']} | {r['ganshi']}日 | {r['persona']} | {r['stem']} | `{r.get('event','-')}` |")
-    L += ["", "## 今後7日（自動算出）", "", "| 日付 | 命式 | 偉人 | 動画n |", "|---|---|---|---|"]
+    L += ["", "## 偉人の巡回（16日で全員1回・間隔は全員16日で完全に均等）", "",
+          "| # | 日付 | 命式 | 偉人 | 動画n |", "|---|---|---|---|---|"]
+    for i in range(16):
+        j = payload(today + datetime.timedelta(days=i))
+        L.append(f"| {i+1} | {j['date']} | {j['ganshi']}日 | {j['persona']} | {j['n']} |")
+    L += ["", "## 今後7日", "", "| 日付 | 命式 | 偉人 | 動画n |", "|---|---|---|---|"]
     for i in range(7):
         j = payload(today + datetime.timedelta(days=i))
         L.append(f"| {j['date']} | {j['ganshi']}日 | {j['persona']} | {j['n']} |")
