@@ -1,0 +1,28 @@
+name: probe advance
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: probe
+        env:
+          POSTS_ENDPOINT: ${{ secrets.POSTS_ENDPOINT }}
+          ADVANCE_ENDPOINT: ${{ secrets.ADVANCE_ENDPOINT }}
+          ADVANCE_TOKEN: ${{ secrets.ADVANCE_TOKEN }}
+        run: |
+          set -uo pipefail
+          echo "POSTS_ENDPOINT set? ${POSTS_ENDPOINT:+yes}"
+          echo "ADVANCE_ENDPOINT set? ${ADVANCE_ENDPOINT:+yes}"
+          echo "ADVANCE_TOKEN len ${#ADVANCE_TOKEN}"
+          echo "--- /today ---"
+          curl -sS --max-time 30 "$POSTS_ENDPOINT" -o /tmp/today.json -w 'http=%{http_code}\n' || true
+          python3 -c "import json;d=json.load(open('/tmp/today.json'));print('n=',d.get('n'),'next=',d.get('next'))" || true
+          echo "--- /diag ---"
+          DIAG="${POSTS_ENDPOINT%/today}/diag"
+          curl -sS --max-time 30 "$DIAG" -w '\nhttp=%{http_code}\n' || true
+          echo "--- /advance ---"
+          curl -sS --max-time 30 -X POST -H "x-token: ${ADVANCE_TOKEN}" -H 'Content-Type: application/json' "$ADVANCE_ENDPOINT" -w '\nhttp=%{http_code}\n' || true
+          echo "--- /today after ---"
+          curl -sS --max-time 30 "$POSTS_ENDPOINT" -o /tmp/today2.json -w 'http=%{http_code}\n' || true
+          python3 -c "import json;d=json.load(open('/tmp/today2.json'));print('n=',d.get('n'),'next=',d.get('next'),'post1=',(d.get('post1') or '')[:40])" || true
