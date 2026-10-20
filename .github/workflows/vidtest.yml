@@ -10,6 +10,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: install deps
+        run: python3 -m pip install --quiet -r automation/x_daily/requirements.txt
       - name: seek and fetch video for 2026-10-21
         env:
           POSTS_ENDPOINT: ${{ secrets.POSTS_ENDPOINT }}
