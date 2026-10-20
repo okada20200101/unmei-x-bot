@@ -29,6 +29,10 @@ python3 -m playwright install --with-deps chromium
 python3 -m playwright install chrome || echo "[warn] chrome install skipped; using runner chrome"
 
 # --- 排他取得（BUSY は待機して再試行。投稿ゼロを許さない）---
+CLAIMED=0
+if [ "${DRY_RUN:-0}" = "1" ] || [ "${PROBE:-0}" = "1" ]; then
+  echo "[guard] 検証モード → 排他取得をスキップ"
+else
 ATTEMPT=0
 VERDICT=""
 while :; do
@@ -37,7 +41,7 @@ while :; do
   printf '%s\n' "$OUT" | tee -a last_run.log
   VERDICT=$(printf '%s\n' "$OUT" | grep -E '^(WON|POSTED|BUSY|LOST)$' | tail -n1)
   case "$VERDICT" in
-    WON) break ;;
+    WON) CLAIMED=1; break ;;
     POSTED) echo "[guard] 本日は投稿済み → 終了"; exit 0 ;;
     BUSY)
       if [ "$ATTEMPT" -ge "${MAX_WAIT_ATTEMPTS:-180}" ]; then
@@ -55,9 +59,6 @@ while :; do
       sleep 60 ;;
   esac
 done
-
-if [ "${DRY_RUN:-0}" = "1" ] || [ "${PROBE:-0}" = "1" ]; then
-  echo "[guard] 検証モード"
 fi
 
 set +e
@@ -85,7 +86,7 @@ if [ "$POSTED" = "1" ]; then
     git rebase --autostash origin/main -q >/dev/null 2>&1 || true
     sleep 3
   done
-else
+elif [ "$CLAIMED" = "1" ]; then
   echo "[guard] 投稿が成立していない → クレームを返却（次の実行が引き継ぐ）"
   bash ./release.sh "$TODAY" 2>&1 | tee -a last_run.log || true
 fi
