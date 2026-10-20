@@ -1,38 +1,28 @@
 name: x daily post (unmei / @unmei_meishiki_)
 
-# 毎朝 5:00 JST = 20:00 UTC (前日)。JST = UTC+9。
-# 対象アカウント: @unmei_meishiki_ (@iching_kobo とは別アカウント・完全独立)
-#
 # ============================================================
-#  真因（2026-10-20）: PAT unmei-x-bot-deploy の期限切れ
+#  毎朝 05:00 JST に「1本だけ」投稿する。JST = UTC+9。
 #
-#  旧構成は on: workflow_dispatch のみ。
-#  Cloudflare Cron (unmei-x-trigger) が 20:00 UTC に PAT で
-#  workflow_dispatch を叩く設計だったため、PAT が失効した瞬間に
-#  トリガーごと死んで「投稿ゼロ」になった。
+#  判定を待たない設計:
+#   ・時刻の精度は WAIT_UNTIL が担保する（早く起動した実行は 05:00 まで待つ）
+#   ・投稿の重複は last_post.txt（JST日付）が担保する
+#   ・命式と偉人は日付から決定論的に算出（外部サーバーのカーソルに依存しない）
+#   ・動画は素材サーバーの n = 偉人index*10 + 十干index を seek して取得
 #
-#  対策:
-#   1) schedule を「保険」として復活（PAT 不要）
-#      ※ GitHub の schedule は 2〜5時間遅延する。05:00 に間に合わない
-#        ことはあるが、投稿がゼロになるよりは良い。
-#   2) 二重投稿ガード: Worker の /diag を見て、当日すでに配信済みなら
-#      スキップする（ローカル state に依存しないので確実）。
-#   3) 既存の入力 (dry_run / probe / require_media / wait_until) は
-#      ci.sh が参照しているため全て維持。
+#  schedule を4本置く理由:
+#   GitHub の schedule は実測 +2h41m〜+5h39m 遅れる。1本だと 05:00 を
+#   跨いで遅れる日が出るため、窓をずらして4本置き、どれか1本が 05:00 前に
+#   起動すればよい構成にする。concurrency で直列化されるので、
+#   待機するのは常に1本だけ（残りは投稿後に走って即 skip）。
 # ============================================================
 
 on:
   schedule:
-    # 5:00 JST (20:00 UTC) に「必ず」投稿するための二重化。どちらか早く来た方が 05:00 まで待って投稿する。
-    #
-    # 実測した GitHub schedule の遅延: +2h41m 〜 +5h39m（平均 +3h37m）。
-    #   16:00 UTC (01:00 JST) 仕掛け → 起動 18:41〜21:39 UTC（03:41〜06:39 JST）
-    #     → 05:00 より前に起動すれば WAIT_UNTIL で 05:00 まで待機＝ちょうど5:00に投稿
-    #   Cloudflare Cron (unmei-x-trigger) は別系統で 19:50/20:00 UTC に叩く（PAT使用）
-    #   → 3系統のどれが先に来ても、5:00 に1本だけ。
-    #
-    # 21:30 UTC は最終保険。ここまで来る＝両方が落ちた時だけ（07:00頃投稿）。
-    - cron: "0 16 * * *"
+    # 23:00 / 00:30 / 02:00 / 06:30 JST 仕掛け
+    #   → 実起動 01:41〜07:39 JST の範囲に散る。05:00 より前のものは待機する。
+    - cron: "0 14 * * *"
+    - cron: "30 15 * * *"
+    - cron: "0 17 * * *"
     - cron: "30 21 * * *"
   workflow_dispatch:
     inputs:
@@ -46,7 +36,10 @@ on:
         description: "1 = 動画が付かなければ投稿せず中止"
         default: "0"
       wait_until:
-        description: "HH:MM (JST) その時刻まで待ってから投稿。例 05:20"
+        description: "HH:MM (JST) まで待ってから投稿。空なら 05:00"
+        default: ""
+      force_date:
+        description: "検証用 YYYY-MM-DD（空なら今日）"
         default: ""
 
 concurrency:
@@ -60,63 +53,38 @@ permissions:
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # ---- 二重投稿ガード（リポジトリ内マーカー方式）----
-      # 投稿に成功したら automation/x_daily/last_post.txt に JST の日付を
-      # コミットする。次の実行はそれを見て、同じ日なら黙って降りる。
-      # Worker の /diag に依存しないので、Worker 側が何であれ確実に効く。
-      # 副次効果: 毎日コミットが入るため、60日無活動で schedule が
-      #           自動停止する GitHub の仕様も回避できる。
-      - name: Duplicate guard (already posted today?)
+      # ---- 二重投稿ガード ----
+      # last_post.txt の1語目（JST日付）が今日なら黙って降りる。
+      # 2語目は発火元（workflow_dispatch / schedule）で、事後の判定に使う。
+      - name: Duplicate guard
         id: guard
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
-          # どのトリガーが先に来ても 05:00 JST ちょうどに揃える（ci.sh が待機）
-          WAIT_UNTIL: "05:00"
           PROBE: ${{ github.event.inputs.probe || '0' }}
         run: |
           set -euo pipefail
           TODAY=$(TZ=Asia/Tokyo date +%F)
           F=automation/x_daily/last_post.txt
-          # マーカーは「JST日付 トリガー種別」の2語。日付だけを比較する。
           LAST=""
           if [ -f "$F" ]; then LAST=$(head -n1 "$F" | awk '{print $1}'); fi
           echo "marker=${LAST:-<none>} today=$TODAY"
           if [ "$DRY_RUN" = "1" ] || [ "$PROBE" = "1" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "dry_run/probe のためガードを素通り"
-            exit 0
+            echo "skip=false" >> "$GITHUB_OUTPUT"; echo "検証モード → ガード素通り"; exit 0
           fi
           if [ "$LAST" = "$TODAY" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "本日 ($TODAY) は投稿済み → スキップ"
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "本日($TODAY)は投稿済み → スキップ"
           else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "未投稿 (marker=${LAST:-none}) → 実行する"
+            echo "skip=false" >> "$GITHUB_OUTPUT"; echo "未投稿(marker=${LAST:-none}) → 実行"
           fi
 
-      # wait_until 指定時はその時刻まで待つ（Cloudflare 経由の呼び出しと互換）
-      - name: Wait until (optional)
-        if: steps.guard.outputs.skip != 'true' && github.event.inputs.wait_until != ''
-        run: |
-          set -euo pipefail
-          TARGET="${{ github.event.inputs.wait_until }}"
-          NOW=$(TZ=Asia/Tokyo date +%s)
-          WANT=$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%F) ${TARGET}" +%s)
-          DIFF=$(( WANT - NOW ))
-          if [ "$DIFF" -gt 0 ] && [ "$DIFF" -lt 21600 ]; then
-            echo "${TARGET} JST まで ${DIFF} 秒待機します"
-            sleep "$DIFF"
-          else
-            echo "待機不要 (diff=${DIFF}s)"
-          fi
-
+      # ---- 投稿（ci.sh 内で WAIT_UNTIL まで待機）----
       - name: Run daily poster
         id: post
         if: steps.guard.outputs.skip != 'true'
@@ -127,40 +95,36 @@ jobs:
           ADVANCE_ENDPOINT: ${{ secrets.ADVANCE_ENDPOINT }}
           ADVANCE_TOKEN: ${{ secrets.ADVANCE_TOKEN }}
           DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
-          # どのトリガーが先に来ても 05:00 JST ちょうどに揃える（ci.sh が待機）
-          WAIT_UNTIL: "05:00"
           PROBE: ${{ github.event.inputs.probe || '0' }}
           REQUIRE_MEDIA: ${{ github.event.inputs.require_media || '0' }}
+          FORCE_DATE: ${{ github.event.inputs.force_date || '' }}
+          WAIT_UNTIL: ${{ github.event.inputs.wait_until || '05:00' }}
         run: bash automation/x_daily/ci.sh
 
-      - name: Upload log & state
+      - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: x-daily-state
+          name: x-daily-log
           path: |
-            automation/x_daily/state.json
             automation/x_daily/last_run.log
           if-no-files-found: ignore
 
-      # ---- 投稿済みマーカーを記録 ----
-      # 実際に投稿できた時だけ日付を書いてコミットする。
-      # dry_run / probe / 失敗時は書かない（＝翌日もきちんと投稿される）。
-      - name: Mark as posted
+      # ---- 記録・STATUS.md 更新・コミット ----
+      # 実際に投稿できた時だけ日付を書く。dry_run/probe/失敗時は書かない。
+      - name: Record & commit
         if: success() && steps.guard.outputs.skip != 'true' && steps.post.outcome == 'success' && github.event.inputs.dry_run != '1' && github.event.inputs.probe != '1'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           F=automation/x_daily/last_post.txt
-          # 日付 ＋ 発火元(event_name) を書く。
-          #   workflow_dispatch = Cloudflare の PAT が生きている証拠
-          #   schedule          = GitHub 側の cron が拾った（＝Cloudflare は死んでいる）
-          echo "$(TZ=Asia/Tokyo date +%F) ${{ github.event_name }}" > "$F"
-          echo "$(TZ=Asia/Tokyo date +'%F %H:%M') event=${{ github.event_name }} run=${{ github.run_id }} actor=${{ github.actor }}" > automation/x_daily/last_trigger.txt
-          echo "marker -> $(cat "$F")"
-          echo "trigger -> $(cat automation/x_daily/last_trigger.txt)"
+          NOW=$(TZ=Asia/Tokyo date +'%F %H:%M')
+          echo "${NOW%% *} ${EVENT_NAME}" > "$F"
+          echo "$NOW event=${EVENT_NAME} run=${{ github.run_id }} actor=${{ github.actor }}" > automation/x_daily/last_trigger.txt
+          POST_TIME="${NOW##* }" python3 automation/x_daily/record.py
           git config user.name  "x-bot"
           git config user.email "x-bot@users.noreply.github.com"
-          git add "$F" automation/x_daily/last_trigger.txt
-          if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
-          git commit -m "x_daily: 投稿済みマーカー $(cat "$F")"
-          git push origin HEAD:main
+          git add "$F" automation/x_daily/last_trigger.txt automation/x_daily/history.jsonl STATUS.md
+          git commit -m "post $(cat "$F")" || echo "no changes"
+          git push
