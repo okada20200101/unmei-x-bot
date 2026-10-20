@@ -2,9 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 TODAY=$(TZ=Asia/Tokyo date +%F)
+JST="date +%F\\ %H:%M"
 
-# --- WAIT_UNTIL: "05:00" が渡されたら、その時刻(JST)まで待ってから投稿 ---
-# 早く起動した実行はここで待つ。5:00 を過ぎて起動した場合は待たずに即投稿。
+# --- WAIT_UNTIL: 早く起動した実行は 05:00 まで待つ（最大5時間30分）---
 if [ -n "${WAIT_UNTIL:-}" ]; then
   python3 - "$WAIT_UNTIL" <<'PYEOF' 2>&1 | tee -a last_run.log
 import sys, time, datetime
@@ -14,8 +14,8 @@ now = datetime.datetime.now(jst)
 target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
 d = (target - now).total_seconds()
 if d > 0:
-    if d > 21000:
-        print("[wait] 待機が長すぎる(%.0fs) → 中止" % d, flush=True); sys.exit(2)
+    if d > 19800:
+        print("[wait] 待機が長すぎる(%.0fs) → この実行は撤退" % d, flush=True); sys.exit(3)
     print("[wait] %.0fs until %s JST" % (d, sys.argv[1]), flush=True)
     time.sleep(d)
 print("[wait] start at", datetime.datetime.now(jst).strftime("%Y-%m-%d %H:%M:%S JST"), flush=True)
@@ -28,17 +28,36 @@ python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
 python3 -m playwright install --with-deps chromium
 python3 -m playwright install chrome || echo "[warn] chrome install skipped; using runner chrome"
 
-# --- 投稿直前ガード（唯一の排他） ---
-# 投稿の直前に origin/main を読み直し、claims/<JST日付>.lock を git push で
-# 勝ち取った1本だけが投稿を続行する。push はサーバー側で直列化されるため、
-# 何本同時に起動しても「投稿まで到達するのは1本」になる。
-if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
-  OUT=$(bash ./claim.sh "$TODAY" 2>&1)
-  echo "$OUT" | tee -a last_run.log
-  case "$OUT" in
-    *"[claim] WON"*) echo "[guard2] クレーム獲得 → 投稿へ" ;;
-    *)               echo "[guard2] クレームを取れず → 投稿せず終了"; exit 0 ;;
+# --- 排他取得（BUSY は待機して再試行。投稿ゼロを許さない）---
+ATTEMPT=0
+VERDICT=""
+while :; do
+  ATTEMPT=$((ATTEMPT+1))
+  OUT=$(bash ./claim.sh "$TODAY" 2>&1 || true)
+  printf '%s\n' "$OUT" | tee -a last_run.log
+  VERDICT=$(printf '%s\n' "$OUT" | grep -E '^(WON|POSTED|BUSY|LOST)$' | tail -n1)
+  case "$VERDICT" in
+    WON) break ;;
+    POSTED) echo "[guard] 本日は投稿済み → 終了"; exit 0 ;;
+    BUSY)
+      if [ "$ATTEMPT" -ge "${MAX_WAIT_ATTEMPTS:-180}" ]; then
+        echo "[guard] 先行実行が${ATTEMPT}分待っても終わらない → 強制引き継ぎ"
+        bash ./release.sh "$TODAY" 2>&1 | tee -a last_run.log || true
+        continue
+      fi
+      echo "[guard] 先行実行の完了を待つ（$ATTEMPT 回目 / 60s）"
+      sleep 60 ;;
+    LOST)
+      echo "[guard] 他が投稿を担当 → この実行は待機して結果を確認"
+      sleep 60 ;;
+    *)
+      echo "[guard] 判定不能（verdict='${VERDICT}'）→ 60秒後に再試行"
+      sleep 60 ;;
   esac
+done
+
+if [ "${DRY_RUN:-0}" = "1" ] || [ "${PROBE:-0}" = "1" ]; then
+  echo "[guard] 検証モード"
 fi
 
 set +e
@@ -46,15 +65,28 @@ python3 daily_run.py 2>&1 | tee -a last_run.log
 RC=${PIPESTATUS[0]}
 set -e
 
-# 投稿前に失敗した場合だけクレームを返却する（投稿済みなら返却しない＝二重投稿を防ぐ）
-if [ "$RC" -ne 0 ]; then
-  if grep -q "\[capture\] tweet id" last_run.log; then
-    echo "[guard2] 失敗だが投稿は成立 → クレーム保持（再投稿しない）"
-  else
-    echo "[guard2] 投稿前に失敗 → クレームを返却"
-    git rm -q --ignore-unmatch "automation/x_daily/claims/${TODAY}.lock" || true
-    git commit -q -m "release claim ${TODAY} (failed before post)" || true
-    git push origin HEAD:main -q || true
-  fi
+POSTED=0
+grep -q "\[capture\] tweet id" last_run.log && POSTED=1
+
+if [ "$POSTED" = "1" ]; then
+  # 投稿が成立した瞬間にマーカーを確定・push（後続ステップの失敗で二重投稿にしない）
+  NOW=$(TZ=Asia/Tokyo date +'%F %H:%M')
+  echo "${NOW%% *} ${EVENT_NAME:-schedule}" > automation/x_daily/last_post.txt
+  echo "$NOW event=${EVENT_NAME:-schedule} run=${GITHUB_RUN_ID:-?} actor=${GITHUB_ACTOR:-?}" > automation/x_daily/last_trigger.txt
+  POST_TIME="${NOW##* }" python3 automation/x_daily/record.py 2>&1 | tee -a last_run.log || true
+  git config user.name  "x-bot"
+  git config user.email "x-bot@users.noreply.github.com"
+  touch automation/x_daily/history.jsonl
+  git add -A automation/x_daily STATUS.md
+  git commit -q -m "post $(cat automation/x_daily/last_post.txt)" || echo "[record] 差分なし"
+  for i in 1 2 3 4 5; do
+    if git push origin HEAD:main -q 2>/dev/null; then echo "[record] マーカー確定 push 成功"; break; fi
+    git fetch origin main -q || true
+    git rebase --autostash origin/main -q >/dev/null 2>&1 || true
+    sleep 3
+  done
+else
+  echo "[guard] 投稿が成立していない → クレームを返却（次の実行が引き継ぐ）"
+  bash ./release.sh "$TODAY" 2>&1 | tee -a last_run.log || true
 fi
 exit "$RC"
