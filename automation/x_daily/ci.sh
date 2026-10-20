@@ -27,6 +27,21 @@ sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1 || echo "[warn] fonts
 python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
 python3 -m playwright install --with-deps chromium
 python3 -m playwright install chrome || echo "[warn] chrome install skipped; using runner chrome"
+# --- 投稿直前ガード: 投稿の直前に origin/main を読み、クレームを勝ち取った1本だけ投稿する ---
+if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+  OUT=$(bash ./claim.sh "$TODAY" 2>&1)
+  echo "$OUT" | tee -a last_run.log
+  case "$OUT" in
+    *"[claim] WON"*) echo "[guard2] クレーム獲得 → 投稿へ" ;;
+    *)               echo "[guard2] クレームを取れず → 投稿せず終了"; exit 0 ;;
+  esac
+fi
+
+sudo apt-get update -qq >/dev/null 2>&1 || true
+sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1 || echo "[warn] fonts install failed"
+python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
+python3 -m playwright install --with-deps chromium
+python3 -m playwright install chrome || echo "[warn] chrome install skipped; using runner chrome"
 # --- 投稿直前ガード: origin/main を直接読み、claims/<date>.lock を原子的に取れた1本だけ投稿 ---
 if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
   TODAY=$(TZ=Asia/Tokyo date +%F)
