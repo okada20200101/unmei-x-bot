@@ -84,8 +84,9 @@ jobs:
           set -euo pipefail
           TODAY=$(TZ=Asia/Tokyo date +%F)
           F=automation/x_daily/last_post.txt
+          # マーカーは「JST日付 トリガー種別」の2語。日付だけを比較する。
           LAST=""
-          if [ -f "$F" ]; then LAST=$(tr -d '[:space:]' < "$F"); fi
+          if [ -f "$F" ]; then LAST=$(head -n1 "$F" | awk '{print $1}'); fi
           echo "marker=${LAST:-<none>} today=$TODAY"
           if [ "$DRY_RUN" = "1" ] || [ "$PROBE" = "1" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -150,11 +151,16 @@ jobs:
         run: |
           set -euo pipefail
           F=automation/x_daily/last_post.txt
-          TZ=Asia/Tokyo date +%F > "$F"
+          # 日付 ＋ 発火元(event_name) を書く。
+          #   workflow_dispatch = Cloudflare の PAT が生きている証拠
+          #   schedule          = GitHub 側の cron が拾った（＝Cloudflare は死んでいる）
+          echo "$(TZ=Asia/Tokyo date +%F) ${{ github.event_name }}" > "$F"
+          echo "$(TZ=Asia/Tokyo date +'%F %H:%M') event=${{ github.event_name }} run=${{ github.run_id }} actor=${{ github.actor }}" > automation/x_daily/last_trigger.txt
           echo "marker -> $(cat "$F")"
+          echo "trigger -> $(cat automation/x_daily/last_trigger.txt)"
           git config user.name  "x-bot"
           git config user.email "x-bot@users.noreply.github.com"
-          git add "$F"
+          git add "$F" automation/x_daily/last_trigger.txt
           if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
           git commit -m "x_daily: 投稿済みマーカー $(cat "$F")"
           git push origin HEAD:main
