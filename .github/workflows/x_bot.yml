@@ -23,10 +23,13 @@ name: x daily post (unmei / @unmei_meishiki_)
 
 on:
   schedule:
-    # 05:00 JST = 20:00 UTC（前日）
-    - cron: "0 20 * * *"
-    # 予備: 07:30 JST（schedule 遅延時の取りこぼしを拾う）
-    - cron: "30 22 * * *"
+    # 【遅延補正】GitHub の schedule は 2時間41分〜5時間39分 遅れて起動する
+    # （実測: 10/13 +5h39m / 10/14 +3h28m / 10/15 +2h41m / 10/16 +2h42m）。
+    # 目標 05:00 JST に対し、平均 3時間37分 の遅延を見込んで
+    # 01:30 JST (= 16:30 UTC 前日) に仕掛ける → 実起動は 04:11〜07:09 JST。
+    - cron: "30 16 * * *"
+    # 保険: 上の実行が落ちた/起動しなかった場合のみ動く（通常はマーカーで skip）
+    - cron: "0 19 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
