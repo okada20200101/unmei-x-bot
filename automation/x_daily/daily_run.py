@@ -303,6 +303,7 @@ def seek_and_fetch_media(target_n, dest):
     except Exception as e:
         log("[media] /status 失敗", repr(e)[:140]); return False
     log("[media] cursor", cur, "→ target", target_n)
+    errs = 0
     for _ in range(200):
         if cur == target_n:
             break
@@ -310,8 +311,19 @@ def seek_and_fetch_media(target_n, dest):
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 cur = int(json.load(r).get("cursor"))
+            errs = 0
         except Exception as e:
-            log("[media] /advance 失敗", repr(e)[:140]); return False
+            # 500 は一時的なことがある。カーソルは進んでいる場合があるので /status で読み直す
+            errs += 1
+            log("[media] /advance 失敗", errs, repr(e)[:100])
+            if errs >= 5:
+                log("[media] advance が連続失敗 → 中断"); return False
+            time.sleep(2)
+            try:
+                cur = get_cur()
+            except Exception:
+                pass
+            continue
     if cur != target_n:
         log("[media] 到達できず", cur, target_n); return False
     log("[media] cursor =", cur)
