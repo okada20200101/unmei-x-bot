@@ -1,0 +1,73 @@
+name: samples
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "何日分"
+        default: "7"
+jobs:
+  s:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: fetch sample videos
+        env:
+          POSTS_ENDPOINT: ${{ secrets.POSTS_ENDPOINT }}
+          ADVANCE_TOKEN: ${{ secrets.ADVANCE_TOKEN }}
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || true
+          mkdir -p out
+          cd automation/x_daily
+          python3 - <<'PY'
+          import os, sys, json, urllib.request, datetime
+          sys.path.insert(0,'.')
+          from rotation import payload, JST
+          base = os.environ["POSTS_ENDPOINT"].split("/today")[0].rstrip("/")
+          hdr = {"User-Agent":"Mozilla/5.0","x-token":os.environ.get("ADVANCE_TOKEN",""),
+                 "Accept":"*/*","Content-Type":"application/json"}
+          def status():
+              r=urllib.request.Request(base+"/status",headers=hdr)
+              with urllib.request.urlopen(r,timeout=30) as x: return int(json.load(x)["cursor"])
+          def adv():
+              r=urllib.request.Request(base+"/advance",method="POST",data=b"",headers=hdr)
+              with urllib.request.urlopen(r,timeout=30) as x: return int(json.load(x)["cursor"])
+          def media(dst):
+              r=urllib.request.Request(base+"/media",headers=hdr)
+              with urllib.request.urlopen(r,timeout=180) as x, open(dst,"wb") as f: f.write(x.read())
+          cur=status(); print("[start] cursor",cur)
+          today=datetime.datetime.now(JST).date()
+          meta=[]
+          for i in range(1,int(os.environ.get("DAYS","7"))+1):
+              it=payload(today+datetime.timedelta(days=i)); n=it["n"]
+              print(f"[{it['date']}] {it['ganshi']} {it['persona']} n={n} cursor={cur}")
+              tries=0
+              while cur!=n and tries<160:
+                  try: cur=adv()
+                  except Exception as e:
+                      print("   adv retry", repr(e)[:60]); cur=status()
+                  tries+=1
+              dst=f"../../out/{it['date']}_{it['ganshi']}_{it['romaji']}.mp4"
+              media(dst)
+              sz=os.path.getsize(dst)
+              print(f"   -> {dst} {sz}")
+              meta.append({**{k:it[k] for k in ("date","ganshi","persona","romaji","stem","n","post1","post2")}, "size":sz})
+          json.dump(meta, open("../../out/meta.json","w"), ensure_ascii=False, indent=1)
+          PY
+      - name: probe + frames
+        run: |
+          cd out
+          for f in *.mp4; do
+            b="${f%.mp4}"
+            ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of csv=p=0 "$f" > "$b.probe.txt" 2>&1 || true
+            ffmpeg -v error -y -ss 1.2 -i "$f" -frames:v 1 -vf scale=540:-1 "$b.frame.png" 2>/dev/null || true
+            echo "$b $(cat "$b.probe.txt")"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: samples
+          path: out/
