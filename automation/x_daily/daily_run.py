@@ -282,6 +282,48 @@ def post_reply(page, handle, text):
     page.wait_for_timeout(7000)
 
 
+def api_base():
+    p = os.environ.get("POSTS_ENDPOINT", "")
+    return p.split("/today")[0].rstrip("/") if p else None
+
+
+def seek_and_fetch_media(target_n, dest):
+    """素材サーバーのカーソルを target_n まで進め、その動画を保存する。"""
+    base = api_base()
+    if not base:
+        log("[media] POSTS_ENDPOINT 未設定"); return False
+    hdr = {"User-Agent": BROWSER_UA, "x-token": os.environ.get("ADVANCE_TOKEN", ""),
+           "Accept": "*/*", "Content-Type": "application/json"}
+    def get_cur():
+        req = urllib.request.Request(base + "/status", headers=hdr)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return int(json.load(r).get("cursor"))
+    try:
+        cur = get_cur()
+    except Exception as e:
+        log("[media] /status 失敗", repr(e)[:140]); return False
+    log("[media] cursor", cur, "→ target", target_n)
+    for _ in range(200):
+        if cur == target_n:
+            break
+        req = urllib.request.Request(base + "/advance", method="POST", data=b"", headers=hdr)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                cur = int(json.load(r).get("cursor"))
+        except Exception as e:
+            log("[media] /advance 失敗", repr(e)[:140]); return False
+    if cur != target_n:
+        log("[media] 到達できず", cur, target_n); return False
+    log("[media] cursor =", cur)
+    try:
+        download(base + "/media", dest)
+    except Exception as e:
+        log("[media] /media 取得失敗", repr(e)[:140]); return False
+    size = os.path.getsize(dest)
+    log("[media] downloaded", size, "bytes")
+    return size > 200000
+
+
 def main():
     import hashlib
     _tk = os.environ.get("ADVANCE_TOKEN", "")
@@ -301,12 +343,17 @@ def main():
     log("[item]", item["ganshi"], item["persona"], item["date"],
         "(n=%s)" % item["n"])
     handle = os.environ.get("X_HANDLE", "unmei_meishiki_")
-    from card import render_card
-    video = str(HERE / "today_card.png")
-    render_card(item, video)
-    log("[card]", video, os.path.getsize(video), "bytes")
-    log("[card] post1\n" + item["post1"])
-    log("[card] post2\n" + item["post2"])
+    # 素材サーバーの160本から、当日の n (=偉人x10+十干) を探して動画を取る
+    video = str(HERE / "today.mp4")
+    got = seek_and_fetch_media(item["n"], video)
+    if not got:
+        log("[media] 動画が取れない → カード画像で代替")
+        from card import render_card
+        video = str(HERE / "today_card.png")
+        render_card(item, video)
+    log("[media] use", video, os.path.getsize(video), "bytes")
+    log("[post1]\n" + item["post1"])
+    log("[post2]\n" + item["post2"])
 
     if DRY:
         log("[dry] 取得のみ（投稿しない）")
