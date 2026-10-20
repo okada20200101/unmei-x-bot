@@ -1,0 +1,24 @@
+name: delete duplicate posts (one-shot)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  del:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check playwright
+          python3 -m playwright install --with-deps chromium
+          python3 -m playwright install chrome || true
+      - name: delete
+        env:
+          X_STORAGE_STATE: ${{ secrets.X_STORAGE_STATE }}
+          TZ: Asia/Tokyo
+        run: python3 automation/dupfix/delete_dup.py
