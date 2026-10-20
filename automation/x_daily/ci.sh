@@ -14,7 +14,7 @@ now = datetime.datetime.now(jst)
 target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
 d = (target - now).total_seconds()
 if d > 0:
-    if d > 21000:            # 5h50m 超は異常（job timeout 360分）
+    if d > 21000:
         print("[wait] 待機が長すぎる(%.0fs) → 中止" % d, flush=True); sys.exit(2)
     print("[wait] %.0fs until %s JST" % (d, sys.argv[1]), flush=True)
     time.sleep(d)
@@ -27,7 +27,11 @@ sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1 || echo "[warn] fonts
 python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
 python3 -m playwright install --with-deps chromium
 python3 -m playwright install chrome || echo "[warn] chrome install skipped; using runner chrome"
-# --- 投稿直前ガード: 投稿の直前に origin/main を読み、クレームを勝ち取った1本だけ投稿する ---
+
+# --- 投稿直前ガード（唯一の排他） ---
+# 投稿の直前に origin/main を読み直し、claims/<JST日付>.lock を git push で
+# 勝ち取った1本だけが投稿を続行する。push はサーバー側で直列化されるため、
+# 何本同時に起動しても「投稿まで到達するのは1本」になる。
 if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
   OUT=$(bash ./claim.sh "$TODAY" 2>&1)
   echo "$OUT" | tee -a last_run.log
@@ -35,33 +39,6 @@ if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -n "${GITHUB_RUN_
     *"[claim] WON"*) echo "[guard2] クレーム獲得 → 投稿へ" ;;
     *)               echo "[guard2] クレームを取れず → 投稿せず終了"; exit 0 ;;
   esac
-fi
-
-sudo apt-get update -qq >/dev/null 2>&1 || true
-sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1 || echo "[warn] fonts install failed"
-python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
-python3 -m playwright install --with-deps chromium
-python3 -m playwright install chrome || echo "[warn] chrome install skipped; using runner chrome"
-# --- 投稿直前ガード: origin/main を直接読み、claims/<date>.lock を原子的に取れた1本だけ投稿 ---
-if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
-  TODAY=$(TZ=Asia/Tokyo date +%F)
-  git config user.name  "x-bot"
-  git config user.email "x-bot@users.noreply.github.com"
-  git fetch origin main -q || true
-  git reset --hard origin/main -q || true
-  LAST=$(awk 'NR==1{print $1}' automation/x_daily/last_post.txt 2>/dev/null || true)
-  echo "[guard2] origin last_post=${LAST:-none} today=$TODAY"
-  if [ "$LAST" = "$TODAY" ]; then echo "[guard2] 本日は投稿済み → 中止"; exit 0; fi
-  mkdir -p automation/x_daily/claims
-  C="automation/x_daily/claims/$TODAY.lock"
-  if [ -f "$C" ]; then echo "[guard2] クレーム済み ($C) → 中止"; exit 0; fi
-  printf '%s run=%s started=%s\n' "$TODAY" "$GITHUB_RUN_ID" "$(date -u +%FT%TZ)" > "$C"
-  git add "$C"
-  git commit -q -m "claim $TODAY run $GITHUB_RUN_ID"
-  if ! git push origin HEAD:main -q 2>/tmp/push.err; then
-    echo "[guard2] クレーム競合で敗退 → 中止"; cat /tmp/push.err; exit 0
-  fi
-  echo "[guard2] クレーム獲得 → 投稿へ"
 fi
 
 set +e
