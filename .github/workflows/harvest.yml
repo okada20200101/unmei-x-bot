@@ -1,0 +1,56 @@
+name: harvest
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "何回カーソルを進めて採取するか"
+        default: "8"
+jobs:
+  h:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: harvest media
+        env:
+          POSTS: ${{ secrets.POSTS_ENDPOINT }}
+          ADV: ${{ secrets.ADVANCE_ENDPOINT }}
+          TOK: ${{ secrets.ADVANCE_TOKEN }}
+          N: ${{ github.event.inputs.count }}
+        run: |
+          python3 -m pip install --quiet requests
+          mkdir -p out
+          python3 - <<'PY'
+          import os, json, hashlib, requests, urllib.parse
+          base = os.environ["POSTS"].split("/today")[0]
+          adv  = os.environ["ADV"]
+          tok  = os.environ.get("TOK","")
+          hdr  = {"User-Agent":"Mozilla/5.0","x-token":tok}
+          n = int(os.environ.get("N","8"))
+          rows=[]
+          for i in range(n):
+              st = requests.get(base+"/status", headers=hdr, timeout=30).json()
+              cur = st.get("cursor")
+              m = requests.get(base+"/media", headers=hdr, timeout=120).content
+              h = hashlib.sha256(m).hexdigest()[:16]
+              t = requests.get(base+"/today", headers=hdr, timeout=30).json()
+              print(f"[{i}] cursor={cur} size={len(m)} sha={h} persona={t.get('persona')} stem={t.get('stem')}")
+              rows.append({"i":i,"cursor":cur,"size":len(m),"sha":h,
+                           "persona":t.get("persona"),"stem":t.get("stem"),
+                           "video_url":t.get("video_url")})
+              open(f"out/{i}_{cur}_{t.get('persona','x')}.mp4","wb").write(m)
+              r = requests.post(adv, headers=hdr, timeout=30)
+              print("   advance:", r.status_code, r.text[:120])
+          uniq={}
+          for r in rows: uniq.setdefault(r["sha"],[]).append(r["cursor"])
+          print("[distinct]", len(uniq), "of", len(rows))
+          for k,v in uniq.items(): print("  ", k, "->", v)
+          json.dump({"rows":rows,"distinct":len(uniq)}, open("out/report.json","w"), ensure_ascii=False, indent=1)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media
+          path: out/
