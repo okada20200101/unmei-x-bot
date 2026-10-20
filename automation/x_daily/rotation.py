@@ -59,7 +59,10 @@ def payload(d=None):
     post2 = (f"{QUOTES[p['romaji']]}\n\n"
              f"―― {name}\n\n"
              f"■ 今日の命式\n{gan}{shi}日")
-    return {"date": d.isoformat(), "n": (d - EPOCH).days % 160,
+    pidx = (d - EPOCH).days % len(PERSONAS)      # 0..15
+    sidx = idx % 10                              # 0..9  (日干)
+    # 素材サーバーの並び: n = 偉人index*10 + 十干index （16x10=160 で実測一致）
+    return {"date": d.isoformat(), "n": pidx * 10 + sidx, "pidx": pidx, "sidx": sidx,
             "persona": name, "romaji": p["romaji"], "hook": p["hook"],
             "stem": gan, "branch": shi, "ganshi": gan + shi, "ganshi_index": idx,
             "wuxing": wuxing, "yinyang": yinyang, "kana": kana,
