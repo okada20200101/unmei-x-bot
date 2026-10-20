@@ -294,11 +294,19 @@ def main():
         return 0
     (HERE / "storage_state.json").write_text(state, encoding="utf-8")
 
-    item = fetch_json(os.environ["POSTS_ENDPOINT"])
-    log("[item]", item.get("n"), item.get("next"))
+    # 回転エンジン（日付から決定論的に偉人・十干・干支を決める。素材サーバー非依存）
+    sys.path.insert(0, str(HERE))
+    from rotation import payload as _payload
+    item = _payload(os.environ.get("FORCE_DATE") or None)
+    log("[item]", item["ganshi"], item["persona"], item["date"],
+        "(n=%s)" % item["n"])
     handle = os.environ.get("X_HANDLE", "unmei_meishiki_")
-    video = str(HERE / "today.mp4")
-    download(item["video_url"], video)
+    from card import render_card
+    video = str(HERE / "today_card.png")
+    render_card(item, video)
+    log("[card]", video, os.path.getsize(video), "bytes")
+    log("[card] post1\n" + item["post1"])
+    log("[card] post2\n" + item["post2"])
 
     if DRY:
         log("[dry] 取得のみ（投稿しない）")
@@ -336,15 +344,7 @@ def main():
         ctx.close()
         b.close()
 
-    adv = os.environ.get("ADVANCE_ENDPOINT")
-    if adv:
-        for attempt in range(4):
-            try:
-                log("[advance]", http_post(adv, os.environ.get("ADVANCE_TOKEN", ""))[:120])
-                break
-            except Exception as e:
-                log("[warn] advance失敗", attempt + 1, repr(e)[:120])
-                time.sleep(5)
+    # カーソルは日付から決まるため /advance は不要（素材サーバー非依存）
     return 0
 
 
