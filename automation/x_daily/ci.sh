@@ -26,6 +26,9 @@ if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -n "${GITHUB_RUN_
     | python3 -c "import sys,json,os;cur=os.environ.get('GITHUB_RUN_ID');d=json.load(sys.stdin);print(' '.join(str(x['id']) for x in d.get('workflow_runs',[]) if str(x['id'])!=cur))" 2>/dev/null || true)
   if [ -n "$OTHER" ]; then echo "[skip] another run within 30min: $OTHER"; exit 0; fi
 fi
+# 日本語フォント（カード描画用・無いと豆腐になる）
+sudo apt-get update -qq >/dev/null 2>&1 || true
+sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1 || echo "[warn] fonts install failed"
 python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
 python3 -m playwright install --with-deps chromium
 python3 -m playwright install chrome || echo "[warn] chrome install skipped; using runner chrome"
