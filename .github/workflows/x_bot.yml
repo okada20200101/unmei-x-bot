@@ -3,27 +3,31 @@ name: x daily post (unmei / @unmei_meishiki_)
 # ============================================================
 #  毎朝 05:00 JST に「1本だけ」投稿する。JST = UTC+9。
 #
-#  判定を待たない設計:
-#   ・時刻の精度は WAIT_UNTIL が担保する（早く起動した実行は 05:00 まで待つ）
-#   ・投稿の重複は last_post.txt（JST日付）が担保する
-#   ・命式と偉人は日付から決定論的に算出（外部サーバーのカーソルに依存しない）
-#   ・動画は素材サーバーの n = 偉人index*10 + 十干index を seek して取得
+#  二重投稿を許さない仕組み（2026-10-21 実装）:
+#   1) 5:00 までの待機（WAIT_UNTIL）で投稿時刻を固定
+#   2) 投稿直前に claims/<JST日付>.lock を git push で原子的に取得
+#      → 同時に何本来ても「投稿まで到達するのは1本」
+#   3) 取得できなかった実行は BUSY として待機し、先行実行が死んでいれば
+#      GitHub API で生死を確認して引き継ぐ（投稿ゼロを作らない）
+#   4) 投稿が成立した瞬間に last_post.txt を確定・push（後続失敗で重複しない）
+#   5) 投稿に至らなかった場合だけクレームを返却（次の窓が引き継ぐ）
 #
-#  schedule を4本置く理由:
-#   GitHub の schedule は実測 +2h41m〜+5h39m 遅れる。1本だと 05:00 を
-#   跨いで遅れる日が出るため、窓をずらして4本置き、どれか1本が 05:00 前に
-#   起動すればよい構成にする。concurrency で直列化されるので、
-#   待機するのは常に1本だけ（残りは投稿後に走って即 skip）。
+#  cron を6本置く理由:
+#   GitHub schedule は実測 +2h41m〜+5h39m 遅れる。1本では 05:00 を跨げない。
+#   窓を重ね、どれか1本が 05:00 前に起動すればよい。05:00 以降の窓は
+#   「まだ投稿されていなければ即投稿する」保険（=投稿ゼロの防止）。
 # ============================================================
 
 on:
   schedule:
-    # 23:00 / 00:30 / 02:00 / 06:30 JST 仕掛け
-    #   → 実起動 01:41〜07:39 JST の範囲に散る。05:00 より前のものは待機する。
+    # 23:00 / 00:30 / 02:00 / 06:30 JST（主経路：5:00 を狙う）
     - cron: "0 14 * * *"
     - cron: "30 15 * * *"
     - cron: "0 17 * * *"
     - cron: "30 21 * * *"
+    # 08:00 / 12:30 JST（保険：未投稿なら即投稿）
+    - cron: "0 23 * * *"
+    - cron: "30 3 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -53,43 +57,22 @@ permissions:
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 420
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # ---- 二重投稿ガード ----
-      # last_post.txt の1語目（JST日付）が今日なら黙って降りる。
-      # 2語目は発火元（workflow_dispatch / schedule）で、事後の判定に使う。
-      - name: Duplicate guard
-        id: guard
-        env:
-          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
-          PROBE: ${{ github.event.inputs.probe || '0' }}
-        run: |
-          set -euo pipefail
-          TODAY=$(TZ=Asia/Tokyo date +%F)
-          F=automation/x_daily/last_post.txt
-          LAST=""
-          if [ -f "$F" ]; then LAST=$(head -n1 "$F" | awk '{print $1}'); fi
-          echo "marker=${LAST:-<none>} today=$TODAY"
-          if [ "$DRY_RUN" = "1" ] || [ "$PROBE" = "1" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"; echo "検証モード → ガード素通り"; exit 0
-          fi
-          if [ "$LAST" = "$TODAY" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "本日($TODAY)は投稿済み → スキップ"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"; echo "未投稿(marker=${LAST:-none}) → 実行"
-          fi
-
-      # ---- 投稿（ci.sh 内で WAIT_UNTIL まで待機）----
+      # 排他・待機・投稿・マーカー確定・返却はすべて ci.sh 内で完結する
       - name: Run daily poster
         id: post
-        if: steps.guard.outputs.skip != 'true'
         env:
           TZ: Asia/Tokyo
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
           X_STORAGE_STATE: ${{ secrets.X_STORAGE_STATE }}
           POSTS_ENDPOINT: ${{ secrets.POSTS_ENDPOINT }}
           ADVANCE_ENDPOINT: ${{ secrets.ADVANCE_ENDPOINT }}
@@ -105,28 +88,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: x-daily-log
-          path: |
-            automation/x_daily/last_run.log
+          name: x-daily-log-${{ github.run_id }}
+          path: automation/x_daily/last_run.log
           if-no-files-found: ignore
-
-      # ---- 記録・STATUS.md 更新・コミット ----
-      # 実際に投稿できた時だけ日付を書く。dry_run/probe/失敗時は書かない。
-      - name: Record & commit
-        if: success() && steps.guard.outputs.skip != 'true' && steps.post.outcome == 'success' && github.event.inputs.dry_run != '1' && github.event.inputs.probe != '1'
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          F=automation/x_daily/last_post.txt
-          NOW=$(TZ=Asia/Tokyo date +'%F %H:%M')
-          echo "${NOW%% *} ${EVENT_NAME}" > "$F"
-          echo "$NOW event=${EVENT_NAME} run=${{ github.run_id }} actor=${{ github.actor }}" > automation/x_daily/last_trigger.txt
-          POST_TIME="${NOW##* }" python3 automation/x_daily/record.py
-          git config user.name  "x-bot"
-          git config user.email "x-bot@users.noreply.github.com"
-          touch automation/x_daily/history.jsonl
-          git add -A automation/x_daily STATUS.md
-          git commit -m "post $(cat "$F")" || echo "no changes"
-          git pull --rebase --autostash || true
-          git push
