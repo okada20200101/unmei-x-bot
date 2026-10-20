@@ -1,0 +1,32 @@
+name: takeover test
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: 死んだクレーム(run=39509113345)を仕込む
+        run: |
+          git config user.name x-bot
+          git config user.email x-bot@users.noreply.github.com
+          for i in 1 2 3; do
+            git fetch origin main -q && git reset --hard origin/main -q
+            mkdir -p automation/x_daily/claims/_test
+            echo "key=test:stale2 run=39509113345 started=2026-10-20T22:30:00Z" > automation/x_daily/claims/_test/stale2.lock
+            git add -A && git commit -q -m "seed stale lock"
+            git push origin HEAD:main -q && break
+            sleep 4
+          done
+          echo "seeded: $(cat automation/x_daily/claims/_test/stale2.lock)"
+      - name: 引き継ぎを検証（WON なら成功）
+        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        run: |
+          OUT=$(bash automation/x_daily/claim.sh test:stale2)
+          printf '%s\n' "$OUT"
+          echo "$OUT" | grep -q '^WON$' && echo "TAKEOVER_OK" || { echo "TAKEOVER_NG"; exit 1; }
