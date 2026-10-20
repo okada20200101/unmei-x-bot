@@ -1,0 +1,45 @@
+name: vidtest
+on:
+  workflow_dispatch:
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: seek and fetch video for 2026-10-21
+        env:
+          POSTS_ENDPOINT: ${{ secrets.POSTS_ENDPOINT }}
+          ADVANCE_ENDPOINT: ${{ secrets.ADVANCE_ENDPOINT }}
+          ADVANCE_TOKEN: ${{ secrets.ADVANCE_TOKEN }}
+          FORCE_DATE: "2026-10-21"
+        run: |
+          cd automation/x_daily
+          python3 rotation.py 2026-10-21
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0,'.')
+          from rotation import payload
+          import daily_run as D
+          it = payload(os.environ["FORCE_DATE"])
+          print("[target]", it["date"], it["ganshi"], it["persona"], "n=", it["n"])
+          ok = D.seek_and_fetch_media(it["n"], "test.mp4")
+          print("[result]", ok, os.path.getsize("test.mp4") if os.path.exists("test.mp4") else 0)
+          print("[post1]"); print(it["post1"]); print("[post2]"); print(it["post2"])
+          PY
+      - name: probe frame
+        run: |
+          cd automation/x_daily
+          ffmpeg -v error -y -ss 1.5 -i test.mp4 -frames:v 1 frame1.png || true
+          ffmpeg -v error -y -ss 9.0 -i test.mp4 -frames:v 1 frame2.png || true
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration -of default=nw=1 test.mp4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v
+          path: |
+            automation/x_daily/test.mp4
+            automation/x_daily/frame1.png
+            automation/x_daily/frame2.png
