@@ -125,6 +125,8 @@ jobs:
           POST_TIME="${NOW##* }" python3 automation/x_daily/record.py
           git config user.name  "x-bot"
           git config user.email "x-bot@users.noreply.github.com"
-          git add "$F" automation/x_daily/last_trigger.txt automation/x_daily/history.jsonl STATUS.md
+          touch automation/x_daily/history.jsonl
+          git add -A "$F" automation/x_daily/last_trigger.txt automation/x_daily/history.jsonl STATUS.md
           git commit -m "post $(cat "$F")" || echo "no changes"
+          git pull --rebase --autostash || true
           git push
