@@ -1,0 +1,9 @@
+# 認証情報（絶対にコミットしない）
+automation/x_daily/storage_state.json
+*.har
+.env
+# 実行時生成物
+automation/x_daily/last_run.log
+automation/x_daily/today.mp4
+__pycache__/
+*.pyc
