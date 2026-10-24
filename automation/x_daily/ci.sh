@@ -9,19 +9,17 @@ log(){ printf '%s\n' "$*" | tee -a "$A/last_run.log"; }
 # 1) 本日すでに投稿済み → 即終了
 if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ]; then
   if [ -f "$A/last_post.txt" ] && [ "$(cut -d' ' -f1 "$A/last_post.txt")" = "$TODAY" ]; then
-    log "[guard] 本日($TODAY)は投稿済み → 即終了"
-    exit 0
+    log "[guard] 本日($TODAY)は投稿済み → 即終了"; exit 0
   fi
 fi
 
-# 2) 投稿窓ゲート（待機はしない。窓の外は即終了）
+# 2) schedule 起動は 05:00 前なら即終了（早出し禁止。05:00 の一発は Cloudflare が撃つ）
 HM=$(TZ=Asia/Tokyo date +%H%M); HM=$((10#$HM))
 if [ "${EVENT_NAME:-schedule}" = "schedule" ] && [ "$HM" -lt 500 ]; then
-  log "[gate] $(TZ=Asia/Tokyo date +%H:%M) JST は窓(05:00)より前 → 即終了"
-  exit 0
+  log "[gate] $(TZ=Asia/Tokyo date +%H:%M) JST < 05:00 → 即終了"; exit 0
 fi
 
-# 3) 排他（秒で終わる）
+# 3) 排他
 CLAIMED=0
 if [ "${DRY_RUN:-0}" = "1" ] || [ "${PROBE:-0}" = "1" ]; then
   log "[guard] 検証モード → 排他スキップ"
@@ -30,7 +28,7 @@ else
   printf '%s\n' "$OUT" | tee -a "$A/last_run.log"
   VERDICT=$(printf '%s\n' "$OUT" | grep -E '^(WON|POSTED|BUSY|LOST)$' | tail -n1)
   case "$VERDICT" in
-    WON)  CLAIMED=1; log "[guard] 排他確保" ;;
+    WON) CLAIMED=1; log "[guard] 排他確保" ;;
     POSTED) exit 0 ;;
     *) log "[guard] verdict=${VERDICT} → 即終了"; exit 0 ;;
   esac
@@ -43,7 +41,25 @@ python3 -m pip install --quiet --disable-pip-version-check -r "$A/requirements.t
 python3 -m playwright install --with-deps chromium
 python3 -m playwright install chrome || echo "[warn] chrome skipped"
 
-# 5) 投稿
+# 5) 発射時刻まで待つ（インストール後に待つので待機は数分）
+if [ -n "${WAIT_UNTIL:-}" ]; then
+  python3 - "$WAIT_UNTIL" <<'PYEOF' 2>&1 | tee -a "$A/last_run.log"
+import sys, time, datetime
+p=[int(x) for x in sys.argv[1].split(":")]
+hh,mm = p[0],p[1]; ss = p[2] if len(p)>2 else 0
+jst=datetime.timezone(datetime.timedelta(hours=9))
+now=datetime.datetime.now(jst)
+t=now.replace(hour=hh,minute=mm,second=ss,microsecond=0)
+d=(t-now).total_seconds()
+if d>1800:
+    print(f"[wait] 待機過大({d:.0f}s) → 撤退"); sys.exit(3)
+if d>0:
+    print(f"[wait] {d:.0f}s until {sys.argv[1]} JST",flush=True); time.sleep(d)
+print("[wait] release at",datetime.datetime.now(jst).strftime("%H:%M:%S JST"),flush=True)
+PYEOF
+fi
+
+# 6) 投稿
 set +e
 python3 "$A/daily_run.py" 2>&1 | tee -a "$A/last_run.log"
 RC=${PIPESTATUS[0]}
