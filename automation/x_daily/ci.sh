@@ -13,12 +13,6 @@ if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ]; then
   fi
 fi
 
-# 2) schedule 起動は 05:00 前なら即終了（早出し禁止。05:00 の一発は Cloudflare が撃つ）
-HM=$(TZ=Asia/Tokyo date +%H%M); HM=$((10#$HM))
-if [ "${EVENT_NAME:-schedule}" = "schedule" ] && [ "$HM" -lt 500 ]; then
-  log "[gate] $(TZ=Asia/Tokyo date +%H:%M) JST < 05:00 → 即終了"; exit 0
-fi
-
 # 3) 排他
 CLAIMED=0
 if [ "${DRY_RUN:-0}" = "1" ] || [ "${PROBE:-0}" = "1" ]; then
@@ -51,7 +45,7 @@ jst=datetime.timezone(datetime.timedelta(hours=9))
 now=datetime.datetime.now(jst)
 t=now.replace(hour=hh,minute=mm,second=ss,microsecond=0)
 d=(t-now).total_seconds()
-if d>1800:
+if d>16200:
     print(f"[wait] 待機過大({d:.0f}s) → 撤退"); sys.exit(3)
 if d>0:
     print(f"[wait] {d:.0f}s until {sys.argv[1]} JST",flush=True); time.sleep(d)
