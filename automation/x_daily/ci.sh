@@ -2,9 +2,54 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 TODAY=$(TZ=Asia/Tokyo date +%F)
-JST="date +%F\\ %H:%M"
 
-# --- WAIT_UNTIL: 早く起動した実行は 05:00 まで待つ（最大5時間30分）---
+log(){ printf '%s\n' "$*" | tee -a last_run.log; }
+
+# ============================================================
+# 0) 本日すでに投稿済みなら、待機もインストールもせず即終了
+#    （保険cronが数十秒で終わるようにする。実行枠の浪費を止める）
+# ============================================================
+if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ]; then
+  if [ -f last_post.txt ] && [ "$(cut -d' ' -f1 last_post.txt)" = "$TODAY" ]; then
+    log "[guard] 本日($TODAY)は投稿済み → 即終了（待機しない）"
+    exit 0
+  fi
+fi
+
+# ============================================================
+# 1) 排他を「待機より先に」取る。勝った1本だけが 05:00 まで待つ。
+#    負けた側は即終了するので、6本が同時に5時間待つ事態にならない。
+# ============================================================
+CLAIMED=0
+if [ "${DRY_RUN:-0}" = "1" ] || [ "${PROBE:-0}" = "1" ]; then
+  log "[guard] 検証モード → 排他取得をスキップ"
+else
+  VERDICT=""
+  OUT=$(bash ./claim.sh "$TODAY" 2>&1 || true)
+  printf '%s\n' "$OUT" | tee -a last_run.log
+  VERDICT=$(printf '%s\n' "$OUT" | grep -E '^(WON|POSTED|BUSY|LOST)$' | tail -n1)
+  case "$VERDICT" in
+    WON)
+      CLAIMED=1
+      log "[guard] 排他確保（この実行が本日の投稿を担当）" ;;
+    POSTED)
+      log "[guard] 本日は投稿済み → 終了"
+      exit 0 ;;
+    BUSY)
+      log "[guard] 先行実行が稼働中 → この実行は即終了（待機しない）"
+      exit 0 ;;
+    LOST)
+      log "[guard] 他が投稿を担当 → この実行は即終了（待機しない）"
+      exit 0 ;;
+    *)
+      log "[guard] 判定不能（verdict='${VERDICT}'）→ 何もせず終了（次のcronが引き継ぐ）"
+      exit 0 ;;
+  esac
+fi
+
+# ============================================================
+# 2) 05:00 まで待つ（排他を取った1本だけ。最大5時間30分）
+# ============================================================
 if [ -n "${WAIT_UNTIL:-}" ]; then
   python3 - "$WAIT_UNTIL" <<'PYEOF' 2>&1 | tee -a last_run.log
 import sys, time, datetime
@@ -22,45 +67,18 @@ print("[wait] start at", datetime.datetime.now(jst).strftime("%Y-%m-%d %H:%M:%S 
 PYEOF
 fi
 
+# ============================================================
+# 3) 依存インストール（待機の後。無駄な消費を避ける）
+# ============================================================
 sudo apt-get update -qq >/dev/null 2>&1 || true
 sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1 || echo "[warn] fonts install failed"
 python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
 python3 -m playwright install --with-deps chromium
 python3 -m playwright install chrome || echo "[warn] chrome install skipped; using runner chrome"
 
-# --- 排他取得（BUSY は待機して再試行。投稿ゼロを許さない）---
-CLAIMED=0
-if [ "${DRY_RUN:-0}" = "1" ] || [ "${PROBE:-0}" = "1" ]; then
-  echo "[guard] 検証モード → 排他取得をスキップ"
-else
-ATTEMPT=0
-VERDICT=""
-while :; do
-  ATTEMPT=$((ATTEMPT+1))
-  OUT=$(bash ./claim.sh "$TODAY" 2>&1 || true)
-  printf '%s\n' "$OUT" | tee -a last_run.log
-  VERDICT=$(printf '%s\n' "$OUT" | grep -E '^(WON|POSTED|BUSY|LOST)$' | tail -n1)
-  case "$VERDICT" in
-    WON) CLAIMED=1; break ;;
-    POSTED) echo "[guard] 本日は投稿済み → 終了"; exit 0 ;;
-    BUSY)
-      if [ "$ATTEMPT" -ge "${MAX_WAIT_ATTEMPTS:-180}" ]; then
-        echo "[guard] 先行実行が${ATTEMPT}分待っても終わらない → 強制引き継ぎ"
-        bash ./release.sh "$TODAY" 2>&1 | tee -a last_run.log || true
-        continue
-      fi
-      echo "[guard] 先行実行の完了を待つ（$ATTEMPT 回目 / 60s）"
-      sleep 60 ;;
-    LOST)
-      echo "[guard] 他が投稿を担当 → この実行は待機して結果を確認"
-      sleep 60 ;;
-    *)
-      echo "[guard] 判定不能（verdict='${VERDICT}'）→ 60秒後に再試行"
-      sleep 60 ;;
-  esac
-done
-fi
-
+# ============================================================
+# 4) 投稿
+# ============================================================
 set +e
 python3 daily_run.py 2>&1 | tee -a last_run.log
 RC=${PIPESTATUS[0]}
@@ -70,7 +88,7 @@ POSTED=0
 grep -q "\[capture\] tweet id" last_run.log && POSTED=1
 
 if [ "$POSTED" = "1" ]; then
-  # 投稿が成立した瞬間にマーカーを確定・push（後続ステップの失敗で二重投稿にしない）
+  # 投稿が成立した瞬間にマーカーを確定・push（後続失敗で二重投稿にしない）
   NOW=$(TZ=Asia/Tokyo date +'%F %H:%M')
   echo "${NOW%% *} ${EVENT_NAME:-schedule}" > automation/x_daily/last_post.txt
   echo "$NOW event=${EVENT_NAME:-schedule} run=${GITHUB_RUN_ID:-?} actor=${GITHUB_ACTOR:-?}" > automation/x_daily/last_trigger.txt
