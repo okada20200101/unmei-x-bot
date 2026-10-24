@@ -53,14 +53,20 @@ print("[wait] release at",datetime.datetime.now(jst).strftime("%H:%M:%S JST"),fl
 PYEOF
 fi
 
-# 6) 投稿
-set +e
-python3 "$A/daily_run.py" 2>&1 | tee -a "$A/last_run.log"
-RC=${PIPESTATUS[0]}
-set -e
-
+# 6) 投稿（3回まで自動再試行。1回の失敗で日を落とさない）
 POSTED=0
-grep -q "\[capture\] tweet id" "$A/last_run.log" && POSTED=1
+RC=1
+TRY=1
+while [ "$TRY" -le 3 ]; do
+  log "[post] attempt ${TRY}/3"
+  set +e
+  python3 "$A/daily_run.py" 2>&1 | tee -a "$A/last_run.log"
+  RC=${PIPESTATUS[0]}
+  set -e
+  if grep -q "\[capture\] tweet id" "$A/last_run.log"; then POSTED=1; break; fi
+  if [ "$TRY" -lt 3 ]; then log "[post] 失敗 → 90秒後に再試行"; sleep 90; fi
+  TRY=$((TRY+1))
+done
 
 if [ "$POSTED" = "1" ]; then
   NOW=$(TZ=Asia/Tokyo date +'%F %H:%M')
@@ -77,8 +83,11 @@ if [ "$POSTED" = "1" ]; then
     git rebase --autostash origin/main -q >/dev/null 2>&1 || true
     sleep 3
   done
-elif [ "$CLAIMED" = "1" ]; then
-  log "[guard] 投稿不成立 → クレーム返却"
+  exit 0
+fi
+
+log "[post] 3回とも不成立 → クレーム返却（次の時間帯が引き継ぐ）"
+if [ "$CLAIMED" = "1" ]; then
   bash "$A/release.sh" "$TODAY" 2>&1 | tee -a "$A/last_run.log" || true
 fi
 exit "$RC"
