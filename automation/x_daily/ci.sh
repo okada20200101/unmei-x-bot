@@ -16,8 +16,8 @@ fi
 
 # 2) 投稿窓ゲート（待機はしない。窓の外は即終了）
 HM=$(TZ=Asia/Tokyo date +%H%M); HM=$((10#$HM))
-if [ "${EVENT_NAME:-schedule}" = "schedule" ] && [ "$HM" -lt 450 ]; then
-  log "[gate] $(TZ=Asia/Tokyo date +%H:%M) JST は窓(04:50)より前 → 即終了"
+if [ "${EVENT_NAME:-schedule}" = "schedule" ] && [ "$HM" -lt 500 ]; then
+  log "[gate] $(TZ=Asia/Tokyo date +%H:%M) JST は窓(05:00)より前 → 即終了"
   exit 0
 fi
 
