@@ -20,12 +20,11 @@ name: x daily post (unmei / @unmei_meishiki_)
 
 on:
   schedule:
-    # 23:00 / 00:30 / 02:00 / 06:30 JST（主経路：5:00 を狙う）
-    - cron: "0 14 * * *"
-    - cron: "30 15 * * *"
-    - cron: "0 17 * * *"
-    - cron: "30 21 * * *"
-    # 08:00 / 12:30 JST（保険：未投稿なら即投稿）
+    # 04:00-05:50 JST を10分間隔で叩く（待機しない。窓に入った最初の1本が即投稿）
+    - cron: "*/10 19-20 * * *"
+    # 06:00-06:50 JST
+    - cron: "*/10 21 * * *"
+    # 保険: 08:00 / 12:30 JST（未投稿なら即投稿）
     - cron: "0 23 * * *"
     - cron: "30 3 * * *"
   workflow_dispatch:
@@ -57,7 +56,7 @@ permissions:
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 420
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,7 +80,6 @@ jobs:
           PROBE: ${{ github.event.inputs.probe || '0' }}
           REQUIRE_MEDIA: ${{ github.event.inputs.require_media || '0' }}
           FORCE_DATE: ${{ github.event.inputs.force_date || '' }}
-          WAIT_UNTIL: ${{ github.event.inputs.wait_until || '05:00' }}
         run: bash automation/x_daily/ci.sh
 
       - name: Upload log
