@@ -57,7 +57,7 @@ fi
 # 6) 投稿（3回まで自動再試行。1回の失敗で日を落とさない）
 XVFB=""
 if command -v xvfb-run >/dev/null 2>&1; then
-  XVFB="xvfb-run -a --server-args=-screen 0 1360x960x24"
+  XVFB="xvfb-run -a"
   log "[cf] 実Chromeをheadful(Xvfb)で起動 → Cloudflare検証を通過させる"
 fi
 POSTED=0
