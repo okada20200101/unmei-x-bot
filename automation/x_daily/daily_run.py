@@ -127,6 +127,35 @@ def launch_browser(p):
     raise RuntimeError("browser launch failed")
 
 
+def open_composer(page, url, tries=3):
+    """コンポーザが描画されるまで待つ。未描画なら再読込して最大3回。"""
+    last = None
+    for i in range(1, tries + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded")
+        except Exception as e:
+            last = e
+            log("[composer] goto失敗", i, repr(e)[:120])
+            continue
+        try:
+            page.wait_for_selector('div[data-testid="tweetTextarea_0"]', timeout=45000)
+            log("[composer] ready", i)
+            return True
+        except Exception as e:
+            last = e
+            log("[composer] 未描画", i, repr(e)[:120])
+            try:
+                shot(page, "err_composer_%d.png" % i)
+            except Exception:
+                pass
+            if "i/flow/login" in page.url:
+                log("[error] セッションが無効（cookie期限切れ）→ Cookieを再取得してSecretを更新")
+                return False
+            page.wait_for_timeout(5000)
+    log("[composer] 3回とも未描画:", repr(last)[:200])
+    return False
+
+
 def fill_composer(page, text):
     ok = page.evaluate(FOCUS_COMPOSER_JS)
     if not ok:
@@ -234,8 +263,9 @@ def shot(page, name):
 
 
 def post_first(page, video, text):
-    page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
-    page.wait_for_timeout(6000)
+    if not open_composer(page, "https://x.com/compose/post"):
+        raise RuntimeError("composer 未描画（ログイン切れ or X側の一時的な描画失敗）")
+    page.wait_for_timeout(1500)
     if PROBE:
         log("[probe] 添付前DIAG"); media_diag(page)
     fill_composer(page, text)          # 先に本文（コンポーザの取りこぼし防止）
@@ -267,8 +297,9 @@ def post_reply(page, handle, text):
     rid = CAPTURE.get("id")
     if not rid:
         raise RuntimeError("tweet id を取得できず（CreateTweet捕捉失敗）")
-    page.goto(f"https://x.com/{handle}/status/{rid}", wait_until="domcontentloaded")
-    page.wait_for_timeout(6000)
+    if not open_composer(page, f"https://x.com/{handle}/status/{rid}"):
+        raise RuntimeError("返信画面のコンポーザ未描画")
+    page.wait_for_timeout(1500)
     try:
         rb = page.locator('[data-testid="reply"]').first
         rb.wait_for(state="visible", timeout=20000)
@@ -380,8 +411,21 @@ def main():
         page.on("response", on_response)
         page.goto("https://x.com/home", wait_until="domcontentloaded")
         page.wait_for_timeout(5000)
-        if "i/flow/login" in page.url or page.url.rstrip("/").endswith("/login"):
-            log("[error] セッションが無効（cookie期限切れ）→ Cookieを再取得してSecretを更新")
+        logged_in = False
+        for _ in range(3):
+            try:
+                page.wait_for_selector(
+                    '[data-testid="SideNav_AccountSwitcher_Button"], div[data-testid="tweetTextarea_0"]',
+                    timeout=15000)
+                logged_in = True
+                break
+            except Exception:
+                if "i/flow/login" in page.url:
+                    break
+                page.wait_for_timeout(4000)
+        if not logged_in:
+            log("[error] セッションが無効（cookie期限切れ or ゲスト表示）→ Cookieを再取得してSecretを更新")
+            shot(page, "err_login.png")
             return 1
 
         try:

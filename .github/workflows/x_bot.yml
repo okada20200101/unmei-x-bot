@@ -93,5 +93,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: x-daily-log-${{ github.run_id }}
-          path: automation/x_daily/last_run.log
+          path: |
+            automation/x_daily/last_run.log
+            automation/x_daily/*.png
           if-no-files-found: ignore
