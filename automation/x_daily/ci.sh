@@ -30,7 +30,8 @@ fi
 
 # 4) 依存（投稿する1本だけが払う）
 sudo apt-get update -qq >/dev/null 2>&1 || true
-sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1 || echo "[warn] fonts failed"
+sudo apt-get install -y -qq fonts-noto-cjk xvfb >/dev/null 2>&1 || echo "[warn] fonts failed"
+if ! command -v xvfb-run >/dev/null 2>&1; then export HEADFUL=0; log "[warn] xvfb無し → headlessで実行"; fi
 python3 -m pip install --quiet --disable-pip-version-check -r "$A/requirements.txt"
 python3 -m playwright install --with-deps chromium
 python3 -m playwright install chrome || echo "[warn] chrome skipped"
@@ -54,13 +55,18 @@ PYEOF
 fi
 
 # 6) 投稿（3回まで自動再試行。1回の失敗で日を落とさない）
+XVFB=""
+if command -v xvfb-run >/dev/null 2>&1; then
+  XVFB="xvfb-run -a --server-args=-screen 0 1360x960x24"
+  log "[cf] 実Chromeをheadful(Xvfb)で起動 → Cloudflare検証を通過させる"
+fi
 POSTED=0
 RC=1
 TRY=1
 while [ "$TRY" -le 3 ]; do
   log "[post] attempt ${TRY}/3"
   set +e
-  python3 "$A/daily_run.py" 2>&1 | tee -a "$A/last_run.log"
+  $XVFB python3 "$A/daily_run.py" 2>&1 | tee -a "$A/last_run.log"
   RC=${PIPESTATUS[0]}
   set -e
   if grep -q "\[capture\] tweet id" "$A/last_run.log"; then POSTED=1; break; fi

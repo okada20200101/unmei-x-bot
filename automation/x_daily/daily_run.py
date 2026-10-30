@@ -115,12 +115,74 @@ def download(url, dest):
         f.write(r.read())
 
 
+STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+window.chrome = window.chrome || {runtime: {}};
+Object.defineProperty(navigator, 'languages', {get: () => ['ja-JP','ja','en-US']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+"""
+
+CF_JS = """
+() => {
+  const t = document.title || '';
+  const body = (document.body && document.body.innerText) || '';
+  const hasFrame = [...document.querySelectorAll('iframe')]
+      .some(f => (f.src || '').includes('challenges.cloudflare.com'));
+  const challenge = /セキュリティ検証|Just a moment|Checking your browser|Verifying you are human|Ray ID/.test(t + ' ' + body)
+      || hasFrame || !!document.querySelector('#challenge-form, #cf-challenge-running');
+  const m = body.match(/Ray ID[:：]\\s*([0-9a-f]+)/i) || t.match(/Ray ID[:：]\\s*([0-9a-f]+)/i);
+  return {challenge: challenge, url: location.href, title: t, ray: m ? m[1] : ''};
+}
+"""
+
+
+def cf_check(page):
+    try:
+        return page.evaluate(CF_JS)
+    except Exception:
+        return {"challenge": False, "url": "", "title": "", "ray": ""}
+
+
+def wait_cf(page, budget=120, tag=""):
+    """Cloudflareの検証ページなら解けるまで待つ。最初から無ければ即True。"""
+    st = cf_check(page)
+    if not st.get("challenge"):
+        return True
+    log("[cf] challenge%s ray=%s url=%s" % (tag, st.get("ray") or "-", st.get("url") or "-"))
+    t0 = time.time()
+    tick = 0
+    while time.time() - t0 < budget:
+        page.wait_for_timeout(3000)
+        tick += 1
+        st = cf_check(page)
+        if not st.get("challenge"):
+            log("[cf] cleared in %ds" % int(time.time() - t0))
+            return True
+        try:
+            page.mouse.move(240 + (tick * 37) % 400, 300 + (tick * 53) % 300, steps=8)
+        except Exception:
+            pass
+        if tick % 5 == 0:
+            try:
+                shot(page, "cf_wait%d.png" % tick)
+            except Exception:
+                pass
+            log("[cf] still challenged %ds" % int(time.time() - t0))
+    log("[cf] 解けず %ds 経過" % budget)
+    return False
+
+
 def launch_browser(p):
-    args = ["--no-sandbox", "--disable-dev-shm-usage", "--autoplay-policy=no-user-gesture-required"]
+    args = ["--no-sandbox", "--disable-dev-shm-usage",
+            "--autoplay-policy=no-user-gesture-required",
+            "--disable-blink-features=AutomationControlled",
+            "--window-size=1360,960"]
+    headful = os.environ.get("HEADFUL", "1") == "1"
     for kw in ({"channel": "chrome"}, {}):
         try:
-            b = p.chromium.launch(args=args, **kw)
-            log("[browser] launch", "chrome-channel" if kw else "bundled-chromium")
+            b = p.chromium.launch(args=args, headless=not headful, **kw)
+            log("[browser] launch", "chrome-channel" if kw else "bundled-chromium",
+                "headful" if headful else "headless")
             return b
         except Exception as e:
             log("[warn] launch 失敗", (kw or "chromium"), repr(e)[:140])
@@ -406,27 +468,46 @@ def main():
         b = launch_browser(p)
         ctx = b.new_context(storage_state=str(HERE / "storage_state.json"),
                             viewport={"width": 1360, "height": 960},
-                            locale="ja-JP", timezone_id="Asia/Tokyo")
+                            locale="ja-JP", timezone_id="Asia/Tokyo",
+                            user_agent=BROWSER_UA)
+        ctx.add_init_script(STEALTH_JS)
         page = ctx.new_page()
         page.on("response", on_response)
-        page.goto("https://x.com/home", wait_until="domcontentloaded")
-        page.wait_for_timeout(5000)
+        try:
+            page.goto("https://x.com/home", wait_until="domcontentloaded")
+        except Exception as e:
+            log("[warn] goto失敗:", repr(e)[:160])
+        page.wait_for_timeout(3000)
+        cf_seen = not wait_cf(page, 150, " home")
         logged_in = False
-        for _ in range(3):
+        for i in range(4):
+            if cf_check(page).get("challenge"):
+                cf_seen = True
+                wait_cf(page, 90, " loop%d" % i)
             try:
                 page.wait_for_selector(
                     '[data-testid="SideNav_AccountSwitcher_Button"], div[data-testid="tweetTextarea_0"]',
-                    timeout=15000)
+                    timeout=20000)
                 logged_in = True
                 break
             except Exception:
                 if "i/flow/login" in page.url:
+                    log("[error] ログイン画面へ転送 → セッション無効")
                     break
-                page.wait_for_timeout(4000)
+                page.wait_for_timeout(5000)
+                try:
+                    page.reload(wait_until="domcontentloaded")
+                except Exception:
+                    pass
         if not logged_in:
-            log("[error] セッションが無効（cookie期限切れ or ゲスト表示）→ Cookieを再取得してSecretを更新")
+            st = cf_check(page)
+            if st.get("challenge") or cf_seen:
+                log("[error] Cloudflareの検証でx.comに入れない（cookie期限切れではない）ray=%s url=%s"
+                    % (st.get("ray") or "-", st.get("url") or "-"))
+            else:
+                log("[error] セッションが無効（cookie期限切れ or ゲスト表示）→ Cookieを再取得してSecretを更新")
             shot(page, "err_login.png")
-            return 1
+            return 2
 
         try:
             if not post_first(page, video, item["post1"]):
