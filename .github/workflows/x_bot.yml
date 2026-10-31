@@ -102,4 +102,5 @@ jobs:
           path: |
             automation/x_daily/last_run.log
             automation/x_daily/*.png
+            automation/x_daily/today_fixed.mp4
           if-no-files-found: ignore

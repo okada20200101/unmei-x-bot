@@ -18,11 +18,11 @@ FONTS = [
     "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
 ]
 # 720x1280 実測 → 相対値。テキスト行は中央やや下。
-BX, BY, BW, BH = 0.233, 0.7785, 0.534, 0.038
-TX, TY = 0.5, 0.7845
-FSIZE = 0.0305
+BX, BY, BW, BH = 0.233, 0.7800, 0.534, 0.0330
+TX, TY = 0.5, 0.7878
+FSIZE = 0.0229
 BG = "0xF7F1EA"
-FG = "0x2A3350"
+FG = "0x8A8177"
 
 
 def log(*a):
