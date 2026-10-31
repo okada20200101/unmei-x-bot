@@ -80,6 +80,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           X_STORAGE_STATE: ${{ secrets.X_STORAGE_STATE }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
           POSTS_ENDPOINT: ${{ secrets.POSTS_ENDPOINT }}
           ADVANCE_ENDPOINT: ${{ secrets.ADVANCE_ENDPOINT }}
           ADVANCE_TOKEN: ${{ secrets.ADVANCE_TOKEN }}

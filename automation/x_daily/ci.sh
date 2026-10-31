@@ -33,8 +33,12 @@ sudo apt-get update -qq >/dev/null 2>&1 || true
 sudo apt-get install -y -qq fonts-noto-cjk xvfb >/dev/null 2>&1 || echo "[warn] fonts failed"
 if ! command -v xvfb-run >/dev/null 2>&1; then export HEADFUL=0; log "[warn] xvfb無し → headlessで実行"; fi
 python3 -m pip install --quiet --disable-pip-version-check -r "$A/requirements.txt"
-python3 -m playwright install --with-deps chromium
-python3 -m playwright install chrome || echo "[warn] chrome skipped"
+if [ -n "${X_API_KEY:-}" ]; then
+  log "[api] X APIキーあり → ブラウザ不要（Cloudflare検証を回避）"
+else
+  python3 -m playwright install --with-deps chromium
+  python3 -m playwright install chrome || echo "[warn] chrome skipped"
+fi
 
 # 5) 発射時刻まで待つ（インストール後に待つので待機は数分）
 if [ -n "${WAIT_UNTIL:-}" ]; then
@@ -56,7 +60,9 @@ fi
 
 # 6) 投稿（3回まで自動再試行。1回の失敗で日を落とさない）
 XVFB=""
-if command -v xvfb-run >/dev/null 2>&1; then
+if [ -n "${X_API_KEY:-}" ]; then
+  :
+elif command -v xvfb-run >/dev/null 2>&1; then
   XVFB="xvfb-run -a"
   log "[cf] 実Chromeをheadful(Xvfb)で起動 → Cloudflare検証を通過させる"
 fi

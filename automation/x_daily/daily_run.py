@@ -464,6 +464,23 @@ def main():
         log("[dry] 取得のみ（投稿しない）")
         return 0
 
+    # X APIキーがあればブラウザを使わない（Cloudflare検証を回避）
+    try:
+        import api_post
+    except Exception as e:
+        log("[warn] api_post 読み込み失敗:", repr(e)[:160])
+        api_post = None
+    if api_post and api_post.available():
+        log("[api] X APIモードで投稿（ブラウザ不使用）")
+        try:
+            id1, id2 = api_post.post_thread(video, item["post1"], item["post2"])
+        except Exception as e:
+            log("[error] API投稿に失敗:", repr(e)[:400])
+            return 1
+        log("[capture] tweet id %s" % id1)
+        log("[api] 完了 id1=%s id2=%s" % (id1, id2))
+        return 0
+
     with sync_playwright() as p:
         b = launch_browser(p)
         ctx = b.new_context(storage_state=str(HERE / "storage_state.json"),
@@ -478,12 +495,12 @@ def main():
         except Exception as e:
             log("[warn] goto失敗:", repr(e)[:160])
         page.wait_for_timeout(3000)
-        cf_seen = not wait_cf(page, 150, " home")
+        cf_seen = not wait_cf(page, 90, " home")
         logged_in = False
         for i in range(4):
             if cf_check(page).get("challenge"):
                 cf_seen = True
-                wait_cf(page, 90, " loop%d" % i)
+                wait_cf(page, 60, " loop%d" % i)
             try:
                 page.wait_for_selector(
                     '[data-testid="SideNav_AccountSwitcher_Button"], div[data-testid="tweetTextarea_0"]',
