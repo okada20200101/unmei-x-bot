@@ -23,12 +23,11 @@ FONTS = [
 # 検出は元の1行の位置（既存素材のテキストがある場所）
 DX, DY, DW, DH = 0.233, 0.7760, 0.534, 0.0430
 # 描き替えは2行分の帯（ボタン下端 0.7672 の下、画面下に余白あり）
-BX, BY, BW, BH = 0.233, 0.7729, 0.534, 0.0688
-FSIZE = 0.0229          # 元テキストと同じ 44px @1080
-LINE_SPACING = 12
-TXT_TOP = 0.7833        # 1行目の上端
-TAIL = 1.2              # 末尾を保持して延ばす秒数
-FADE = 0.15             # 語尾のフェード長
+BX, BY, BW, BH = 0.233, 0.7729, 0.534, 0.0700
+FSIZE = 0.0229                    # 元テキストと同じ 44px @1080
+LINE_Y = [0.7839, 0.8161]         # 1行目・2行目の上端（行間 62px）
+TAIL = 1.2                        # 末尾を保持して延ばす秒数
+FADE = 0.15                       # 語尾のフェード長
 BG = "0xF7F1EA"
 FG = "0x8A8177"
 
@@ -117,35 +116,42 @@ def fix(src, dst, label=NEW):
         return False
     # drawtext の fontsize は数値のみ（ih*… は評価されない）→ 実寸から算出
     fs = max(10, int(round(h * FSIZE)))
-    ty = int(round(h * TXT_TOP))
     box = ("drawbox=x=iw*%f:y=ih*%f:w=iw*%f:h=ih*%f:color=%s@1:t=fill:enable='gte(t,%.3f)'"
            % (BX, BY, BW, BH, BG, t0))
-    text = label.replace("'", "").replace(":", "\\:")
-    txt = ("drawtext=fontfile=%s:text='%s':fontcolor=%s:fontsize=%d:line_spacing=%d"
-           ":x=(w-text_w)/2:y=%d:enable='gte(t,%.3f)'"
-           % (f, text, FG, fs, LINE_SPACING, ty, t0))
     # 音声は末尾で切れている → 語尾を短くフェードさせて唐突さを消す
     fade = "afade=t=out:st=%.3f:d=%.2f" % (max(0.0, dur - FADE), FADE)
     pad = "tpad=stop_mode=clone:stop_duration=%.2f" % TAIL
     enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
            "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     acopy = ["-c:a", "copy"]
-    # 複数フィルタを一度に渡すと評価順で落ちる環境があるためパスを分ける
-    p1 = str(Path(dst).with_suffix(".step1.mp4"))
-    p2 = str(Path(dst).with_suffix(".step2.mp4"))
+    lines = [x for x in label.split("\n") if x.strip()]
+    # 複数フィルタを一度に渡すと評価順で落ちる環境があるため1行ずつパスを分ける
+    steps = [box] + ["drawtext=fontfile=%s:text='%s':fontcolor=%s:fontsize=%d"
+                     ":x=(w-text_w)/2:y=%d:enable='gte(t,%.3f)'"
+                     % (f, s.replace("'", "").replace(":", "\\:"), FG, fs,
+                        int(round(h * LINE_Y[min(i, len(LINE_Y) - 1)])), t0)
+                     for i, s in enumerate(lines)] + [pad]
+    cur = src
+    tmps = []
     try:
-        run(["ffmpeg", "-y", "-loglevel", "error", "-i", src,
-             "-vf", box, "-af", fade, "-c:a", "aac", "-b:a", "192k"] + enc + [p1])
-        run(["ffmpeg", "-y", "-loglevel", "error", "-i", p1,
-             "-vf", txt] + acopy + enc + [p2])
-        run(["ffmpeg", "-y", "-loglevel", "error", "-i", p2,
-             "-vf", pad] + acopy + enc + [dst])
+        for i, flt in enumerate(steps):
+            last = (i == len(steps) - 1)
+            nxt = dst if last else str(Path(dst).with_suffix(".step%d.mp4" % i))
+            if not last:
+                tmps.append(nxt)
+            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", cur, "-vf", flt]
+            if i == 0:
+                cmd += ["-af", fade, "-c:a", "aac", "-b:a", "192k"]
+            else:
+                cmd += acopy
+            run(cmd + enc + [nxt])
+            cur = nxt
     finally:
-        for p in (p1, p2):
+        for p in tmps:
             if os.path.exists(p):
                 os.unlink(p)
     log("[fix] 「%s」→「%s」 t>=%.2fs (%dx%d fs=%d) 尺 %.2fs→%.2fs"
-        % (OLD, label.replace("\n", " / "), t0, w, h, fs, dur, dur + TAIL))
+        % (OLD, " / ".join(lines), t0, w, h, fs, dur, dur + TAIL))
     return True
 
 
