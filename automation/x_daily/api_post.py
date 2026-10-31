@@ -14,6 +14,7 @@ from requests_oauthlib import OAuth1Session
 UPLOAD_HOSTS = ["https://upload.twitter.com", "https://upload.x.com"]
 API_HOSTS = ["https://api.x.com", "https://api.twitter.com"]
 CHUNK = 4 * 1024 * 1024
+TIMEOUT = 180
 
 
 def log(*a):
@@ -34,7 +35,9 @@ def session():
     c = _creds()
     if not c:
         raise RuntimeError("X API キーが未設定")
-    return OAuth1Session(c[0], c[1], c[2], c[3], timeout=180)
+    sess = OAuth1Session(c[0], c[1], c[2], c[3])
+    sess.timeout = TIMEOUT
+    return sess
 
 
 def _first_ok(fn):
@@ -53,7 +56,7 @@ def upload_video(sess, path):
     log("[api] media INIT", size, "bytes")
 
     def init(host):
-        r = sess.post(host + "/1.1/media/upload.json", data={
+        r = sess.post(host + "/1.1/media/upload.json", timeout=TIMEOUT, data={
             "command": "INIT", "total_bytes": size,
             "media_type": "video/mp4", "media_category": "tweet_video"})
         r.raise_for_status()
@@ -68,14 +71,14 @@ def upload_video(sess, path):
             chunk = f.read(CHUNK)
             if not chunk:
                 break
-            r = sess.post(host + "/1.1/media/upload.json", data={
+            r = sess.post(host + "/1.1/media/upload.json", timeout=TIMEOUT, data={
                 "command": "APPEND", "media_id": media_id, "segment_index": seg},
                 files={"media": ("blob", chunk)})
             r.raise_for_status()
             seg += 1
     log("[api] APPEND", seg, "segments")
 
-    r = sess.post(host + "/1.1/media/upload.json",
+    r = sess.post(host + "/1.1/media/upload.json", timeout=TIMEOUT,
                   data={"command": "FINALIZE", "media_id": media_id})
     r.raise_for_status()
     info = (r.json() or {}).get("processing_info")
@@ -86,7 +89,7 @@ def upload_video(sess, path):
             raise RuntimeError("media processing timeout")
         time.sleep(wait)
         waited += wait
-        r = sess.get(host + "/1.1/media/upload.json",
+        r = sess.get(host + "/1.1/media/upload.json", timeout=TIMEOUT,
                      params={"command": "STATUS", "media_id": media_id})
         r.raise_for_status()
         info = (r.json() or {}).get("processing_info")
@@ -107,7 +110,7 @@ def create_post(sess, text, media_id=None, reply_to=None):
     last = None
     for host in API_HOSTS:
         try:
-            r = sess.post(host + "/2/tweets", json=payload)
+            r = sess.post(host + "/2/tweets", json=payload, timeout=TIMEOUT)
             if r.status_code >= 400:
                 raise RuntimeError("HTTP %s %s" % (r.status_code, r.text[:300]))
             return r.json()["data"]["id"]
@@ -141,7 +144,7 @@ if __name__ == "__main__":
         if not available():
             log("[api] キー未設定"); sys.exit(3)
         s = session()
-        r = s.get(API_HOSTS[0] + "/2/users/me")
+        r = s.get(API_HOSTS[0] + "/2/users/me", timeout=TIMEOUT)
         log("[api] /2/users/me", r.status_code, r.text[:400])
         sys.exit(0 if r.status_code == 200 else 1)
     log("usage: api_post.py --check"); sys.exit(2)
