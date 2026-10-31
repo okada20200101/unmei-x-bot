@@ -456,6 +456,14 @@ def main():
         from card import render_card
         video = str(HERE / "today_card.png")
         render_card(item, video)
+    # エンドカードの「まもなく公開」→ 公開済みの表記へ差し替え（全素材に適用）
+    try:
+        from media_fix import fix as _fix_media
+        fixed = str(HERE / "today_fixed.mp4")
+        if _fix_media(video, fixed):
+            video = fixed
+    except Exception as e:
+        log("[warn] エンドカード修正をスキップ:", repr(e)[:200])
     log("[media] use", video, os.path.getsize(video), "bytes")
     log("[post1]\n" + item["post1"])
     log("[post2]\n" + item["post2"])
