@@ -3,24 +3,32 @@
 
 素材サーバーの160本はすべて「Google Play ボタン＋まもなく公開」のエンドカードで
 書き出されている。アプリは既に公開済みなので、投稿直前に該当行だけ差し替える
-（元動画のデザイン・動きはそのまま、1行だけ描き替える）。
+（元動画のデザイン・動きはそのまま、文字だけ描き替える）。
 
-  python3 media_fix.py in.mp4 out.mp4 [--label "Google Play で配信中"]
+さらに音声が末尾で切れているため、末尾を保持して少しだけ尺を延ばし、
+語尾が唐突に切れないよう短いフェードをかける。
+
+  python3 media_fix.py in.mp4 out.mp4 [--label "1行目\n2行目"]
 """
 import json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 OLD = "まもなく公開"
-NEW = "Google Play で配信中"
+NEW = "四柱推命を、もっと深く。\n無料でダウンロード。"
 FONTS = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
 ]
-# 720x1280 実測 → 相対値。テキスト行は中央やや下。
-BX, BY, BW, BH = 0.233, 0.7800, 0.534, 0.0330
-TX, TY = 0.5, 0.7878
-FSIZE = 0.0229
+# 検出は元の1行の位置（既存素材のテキストがある場所）
+DX, DY, DW, DH = 0.233, 0.7760, 0.534, 0.0430
+# 描き替えは2行分の帯（ボタン下端 0.7672 の下、画面下に余白あり）
+BX, BY, BW, BH = 0.233, 0.7729, 0.534, 0.0688
+FSIZE = 0.0229          # 元テキストと同じ 44px @1080
+LINE_SPACING = 12
+TXT_TOP = 0.7833        # 1行目の上端
+TAIL = 1.2              # 末尾を保持して延ばす秒数
+FADE = 0.15             # 語尾のフェード長
 BG = "0xF7F1EA"
 FG = "0x8A8177"
 
@@ -59,16 +67,16 @@ def text_present(png):
         return True
     im = np.array(Image.open(png).convert("RGB")).astype(int)
     h, w, _ = im.shape
-    y0, y1 = int(h * (BY - 0.004)), int(h * (BY + BH + 0.004))
-    x0, x1 = int(w * BX), int(w * (BX + BW))
+    y0, y1 = int(h * (DY - 0.004)), int(h * (DY + DH + 0.004))
+    x0, x1 = int(w * DX), int(w * (DX + DW))
     bg = np.array([247, 241, 234])
     return int((np.abs(im[y0:y1, x0:x1] - bg).sum(axis=2) > 40).sum()) > 60
 
 
-def find_start(src, dur, lo=None, hi=0.995, step=0.10):
+def find_start(src, dur, hi=0.995, step=0.10):
     """エンドカードのテキストが出る最初の時刻を探す。見つからなければ None。"""
     # エンドカードは末尾 3.5 秒にしか出ない（本編の文字を拾わないよう範囲を限定）
-    t = max(0.0, dur - 3.5) if lo is None else dur * lo
+    t = max(0.0, dur - 3.5)
     tmp = tempfile.mkdtemp()
     hit = None
     try:
@@ -109,23 +117,35 @@ def fix(src, dst, label=NEW):
         return False
     # drawtext の fontsize は数値のみ（ih*… は評価されない）→ 実寸から算出
     fs = max(10, int(round(h * FSIZE)))
-    ty = int(round(h * TY))
+    ty = int(round(h * TXT_TOP))
     box = ("drawbox=x=iw*%f:y=ih*%f:w=iw*%f:h=ih*%f:color=%s@1:t=fill:enable='gte(t,%.3f)'"
            % (BX, BY, BW, BH, BG, t0))
-    txt = ("drawtext=fontfile=%s:text='%s':fontcolor=%s:fontsize=%d"
+    text = label.replace("'", "").replace(":", "\\:")
+    txt = ("drawtext=fontfile=%s:text='%s':fontcolor=%s:fontsize=%d:line_spacing=%d"
            ":x=(w-text_w)/2:y=%d:enable='gte(t,%.3f)'"
-           % (f, label.replace(":", "\\:").replace("'", ""), FG, fs, ty, t0))
+           % (f, text, FG, fs, LINE_SPACING, ty, t0))
+    # 音声は末尾で切れている → 語尾を短くフェードさせて唐突さを消す
+    fade = "afade=t=out:st=%.3f:d=%.2f" % (max(0.0, dur - FADE), FADE)
+    pad = "tpad=stop_mode=clone:stop_duration=%.2f" % TAIL
     enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-           "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart"]
-    # 2つのフィルタを同時に渡すと評価順で落ちる環境があるため2パスに分ける
-    tmp = str(Path(dst).with_suffix(".step1.mp4"))
+           "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+    acopy = ["-c:a", "copy"]
+    # 複数フィルタを一度に渡すと評価順で落ちる環境があるためパスを分ける
+    p1 = str(Path(dst).with_suffix(".step1.mp4"))
+    p2 = str(Path(dst).with_suffix(".step2.mp4"))
     try:
-        run(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vf", box] + enc + [tmp])
-        run(["ffmpeg", "-y", "-loglevel", "error", "-i", tmp, "-vf", txt] + enc + [dst])
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", src,
+             "-vf", box, "-af", fade, "-c:a", "aac", "-b:a", "192k"] + enc + [p1])
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", p1,
+             "-vf", txt] + acopy + enc + [p2])
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", p2,
+             "-vf", pad] + acopy + enc + [dst])
     finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-    log("[fix] 「%s」→「%s」 t>=%.2fs (%dx%d fs=%d)" % (OLD, label, t0, w, h, fs))
+        for p in (p1, p2):
+            if os.path.exists(p):
+                os.unlink(p)
+    log("[fix] 「%s」→「%s」 t>=%.2fs (%dx%d fs=%d) 尺 %.2fs→%.2fs"
+        % (OLD, label.replace("\n", " / "), t0, w, h, fs, dur, dur + TAIL))
     return True
 
 
@@ -135,5 +155,5 @@ if __name__ == "__main__":
     a, b = sys.argv[1], sys.argv[2]
     lab = NEW
     if "--label" in sys.argv:
-        lab = sys.argv[sys.argv.index("--label") + 1]
+        lab = sys.argv[sys.argv.index("--label") + 1].replace("\\n", "\n")
     fix(a, b, lab)
