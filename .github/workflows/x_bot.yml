@@ -51,6 +51,9 @@ on:
       force_date:
         description: "検証用 YYYY-MM-DD（空なら今日）"
         default: ""
+      delete_only:
+        description: "1 = repost_id を削除するだけで投稿しない"
+        default: "0"
       repost_id:
         description: "誤投稿の差し替え: 削除するツイートID。LATEST なら最新を自動特定（空なら通常運転）"
         default: ""
@@ -96,6 +99,7 @@ jobs:
           WAIT_UNTIL: ${{ github.event.inputs.wait_until || '04:58:59' }}
           FORCE_DATE: ${{ github.event.inputs.force_date || '' }}
           REPOST_ID: ${{ github.event.inputs.repost_id || '' }}
+          DELETE_ONLY: ${{ github.event.inputs.delete_only || '0' }}
         run: bash automation/x_daily/ci.sh
 
       - name: Upload log

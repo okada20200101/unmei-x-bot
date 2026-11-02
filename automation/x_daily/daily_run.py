@@ -489,6 +489,9 @@ def main():
                 log("[api] 旧ツイートを削除", repost)
             except Exception as e:
                 log("[warn] 旧ツイート削除に失敗:", repr(e)[:200])
+        if (os.environ.get("DELETE_ONLY") or "") == "1":
+            log("[api] 削除のみモード → 投稿せず終了")
+            return 0
         log("[api] X APIモードで投稿（ブラウザ不使用）")
         try:
             id1, id2 = api_post.post_thread(video, item["post1"], item["post2"])
