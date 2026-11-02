@@ -120,6 +120,23 @@ def create_post(sess, text, media_id=None, reply_to=None):
     raise last
 
 
+def latest_tweet_id(user_id="2109414789978198016"):
+    """直近のポストIDを取得（誤投稿の差し替え用）。"""
+    sess = session()
+    for host in API_HOSTS:
+        try:
+            r = sess.get(host + "/2/users/%s/tweets" % user_id,
+                         params={"max_results": 5, "exclude": "retweets"}, timeout=TIMEOUT)
+            if r.status_code >= 400:
+                continue
+            d = r.json().get("data") or []
+            if d:
+                return d[0]["id"]
+        except Exception as e:
+            log("[api] latest host失敗", host, repr(e)[:120])
+    return None
+
+
 def delete_tweet(tweet_id):
     """指定ツイートを削除する（誤投稿の差し替え用）。"""
     sess = session()

@@ -52,7 +52,7 @@ on:
         description: "検証用 YYYY-MM-DD（空なら今日）"
         default: ""
       repost_id:
-        description: "誤投稿の差し替え: 削除するツイートID（空なら通常運転）"
+        description: "誤投稿の差し替え: 削除するツイートID。LATEST なら最新を自動特定（空なら通常運転）"
         default: ""
 
 concurrency:

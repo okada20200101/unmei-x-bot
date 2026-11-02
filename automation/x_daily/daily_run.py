@@ -480,6 +480,9 @@ def main():
         api_post = None
     if api_post and api_post.available():
         repost = (os.environ.get("REPOST_ID") or "").strip()
+        if repost.upper() == "LATEST":
+            repost = api_post.latest_tweet_id() or ""
+            log("[api] 最新ポストを特定", repost)
         if repost:
             try:
                 api_post.delete_tweet(repost)
