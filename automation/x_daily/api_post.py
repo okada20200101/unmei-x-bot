@@ -120,6 +120,22 @@ def create_post(sess, text, media_id=None, reply_to=None):
     raise last
 
 
+def delete_tweet(tweet_id):
+    """指定ツイートを削除する（誤投稿の差し替え用）。"""
+    sess = session()
+    last = None
+    for host in API_HOSTS:
+        try:
+            r = sess.delete(host + "/2/tweets/" + str(tweet_id), timeout=TIMEOUT)
+            if r.status_code >= 400:
+                raise RuntimeError("HTTP %s %s" % (r.status_code, r.text[:300]))
+            return True
+        except Exception as e:
+            last = e
+            log("[api] delete host失敗", host, repr(e)[:160])
+    raise last
+
+
 def post_thread(video, text1, text2):
     sess = session()
     mid = None

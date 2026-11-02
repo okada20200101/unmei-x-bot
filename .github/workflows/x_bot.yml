@@ -51,6 +51,9 @@ on:
       force_date:
         description: "検証用 YYYY-MM-DD（空なら今日）"
         default: ""
+      repost_id:
+        description: "誤投稿の差し替え: 削除するツイートID（空なら通常運転）"
+        default: ""
 
 concurrency:
   group: x-daily
@@ -92,6 +95,7 @@ jobs:
           REQUIRE_MEDIA: ${{ github.event.inputs.require_media || '0' }}
           WAIT_UNTIL: ${{ github.event.inputs.wait_until || '04:58:59' }}
           FORCE_DATE: ${{ github.event.inputs.force_date || '' }}
+          REPOST_ID: ${{ github.event.inputs.repost_id || '' }}
         run: bash automation/x_daily/ci.sh
 
       - name: Upload log

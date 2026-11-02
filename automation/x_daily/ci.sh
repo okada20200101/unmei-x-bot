@@ -7,7 +7,7 @@ TODAY=$(TZ=Asia/Tokyo date +%F)
 log(){ printf '%s\n' "$*" | tee -a "$A/last_run.log"; }
 
 # 1) 本日すでに投稿済み → 即終了
-if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ]; then
+if [ "${DRY_RUN:-0}" != "1" ] && [ "${PROBE:-0}" != "1" ] && [ -z "${REPOST_ID:-}" ]; then
   if [ -f "$A/last_post.txt" ] && [ "$(cut -d' ' -f1 "$A/last_post.txt")" = "$TODAY" ]; then
     log "[guard] 本日($TODAY)は投稿済み → 即終了"; exit 0
   fi
@@ -15,8 +15,8 @@ fi
 
 # 3) 排他
 CLAIMED=0
-if [ "${DRY_RUN:-0}" = "1" ] || [ "${PROBE:-0}" = "1" ]; then
-  log "[guard] 検証モード → 排他スキップ"
+if [ "${DRY_RUN:-0}" = "1" ] || [ "${PROBE:-0}" = "1" ] || [ -n "${REPOST_ID:-}" ]; then
+  log "[guard] 検証/再投稿モード → 排他スキップ"
 else
   OUT=$(bash "$A/claim.sh" "$TODAY" 2>&1 || true)
   printf '%s\n' "$OUT" | tee -a "$A/last_run.log"
@@ -30,7 +30,7 @@ fi
 
 # 4) 依存（投稿する1本だけが払う）
 sudo apt-get update -qq >/dev/null 2>&1 || true
-sudo apt-get install -y -qq fonts-noto-cjk xvfb >/dev/null 2>&1 || echo "[warn] fonts failed"
+sudo apt-get install -y -qq ffmpeg fonts-noto-cjk xvfb >/dev/null 2>&1 || echo "[warn] fonts failed"
 if ! command -v xvfb-run >/dev/null 2>&1; then export HEADFUL=0; log "[warn] xvfb無し → headlessで実行"; fi
 python3 -m pip install --quiet --disable-pip-version-check -r "$A/requirements.txt"
 if [ -n "${X_API_KEY:-}" ]; then

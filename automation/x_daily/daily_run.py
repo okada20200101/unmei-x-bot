@@ -479,6 +479,13 @@ def main():
         log("[warn] api_post 読み込み失敗:", repr(e)[:160])
         api_post = None
     if api_post and api_post.available():
+        repost = (os.environ.get("REPOST_ID") or "").strip()
+        if repost:
+            try:
+                api_post.delete_tweet(repost)
+                log("[api] 旧ツイートを削除", repost)
+            except Exception as e:
+                log("[warn] 旧ツイート削除に失敗:", repr(e)[:200])
         log("[api] X APIモードで投稿（ブラウザ不使用）")
         try:
             id1, id2 = api_post.post_thread(video, item["post1"], item["post2"])
