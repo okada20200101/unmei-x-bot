@@ -10,10 +10,12 @@
 
   python3 media_fix.py in.mp4 out.mp4 [--label "1行目\n2行目"]
 """
-import json, os, shutil, subprocess, sys, tempfile
+import json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 OLD = "まもなく公開"
+# 音声の末尾に残る「まもなく公開」も消す（映像だけ直しても音声が残る）
+ACUT_FALLBACK = 0.62              # 無音ギャップを検出できなかった時の保険（秒・末尾から）
 NEW = "四柱推命を、もっと深く。\n無料でダウンロード。"
 FONTS = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
@@ -93,6 +95,31 @@ def find_start(src, dur, hi=0.995, step=0.10):
     return hit
 
 
+def last_sentence_start(src, dur):
+    """音声の末尾発話（=「まもなく公開」）の開始時刻を無音ギャップから求める。"""
+    try:
+        r = subprocess.run(["ffmpeg", "-hide_banner", "-i", src,
+                            "-af", "silencedetect=noise=-32dB:d=0.18", "-f", "null", "-"],
+                           capture_output=True)
+        txt = (r.stderr or b"").decode("utf-8", "ignore")
+        starts = [float(x) for x in re.findall(r"silence_start:\s*([\d.]+)", txt)]
+        ends = [float(x) for x in re.findall(r"silence_end:\s*([\d.]+)", txt)]
+        best = None
+        for i, st in enumerate(starts):
+            if i < len(ends):
+                en = ends[i]
+            else:
+                continue  # 末尾まで無音（=発話なし）
+            # 末尾2.2秒以内に始まり、0.10〜0.9秒の短い間 → その直後が最終文
+            if en >= dur - 2.2 and en <= dur - 0.03 and (en - st) <= 0.9:
+                best = en
+        if best is not None and dur - best <= 1.3:
+            return max(0.0, best - 0.03)
+    except Exception as e:
+        log("[fix] 音声ギャップ検出失敗:", repr(e)[:120])
+    return max(0.0, dur - ACUT_FALLBACK)
+
+
 def font_arg():
     for f in FONTS:
         if os.path.exists(f):
@@ -119,7 +146,11 @@ def fix(src, dst, label=NEW):
     box = ("drawbox=x=iw*%f:y=ih*%f:w=iw*%f:h=ih*%f:color=%s@1:t=fill:enable='gte(t,%.3f)'"
            % (BX, BY, BW, BH, BG, t0))
     # 音声は末尾で切れている → 語尾を短くフェードさせて唐突さを消す
-    fade = "afade=t=out:st=%.3f:d=%.2f" % (max(0.0, dur - FADE), FADE)
+    cut = last_sentence_start(src, dur)
+    total = dur + TAIL
+    af = ("atrim=end=%.3f,asetpts=PTS-STARTPTS,"
+          "afade=t=out:st=%.3f:d=0.12,apad=whole_dur=%.3f"
+          % (cut, max(0.0, cut - 0.12), total))
     pad = "tpad=stop_mode=clone:stop_duration=%.2f" % TAIL
     enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
            "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
@@ -141,7 +172,7 @@ def fix(src, dst, label=NEW):
                 tmps.append(nxt)
             cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", cur, "-vf", flt]
             if i == 0:
-                cmd += ["-af", fade, "-c:a", "aac", "-b:a", "192k"]
+                cmd += ["-c:a", "copy"]
             else:
                 cmd += acopy
             run(cmd + enc + [nxt])
@@ -150,8 +181,21 @@ def fix(src, dst, label=NEW):
         for p in tmps:
             if os.path.exists(p):
                 os.unlink(p)
-    log("[fix] 「%s」→「%s」 t>=%.2fs (%dx%d fs=%d) 尺 %.2fs→%.2fs"
-        % (OLD, " / ".join(lines), t0, w, h, fs, dur, dur + TAIL))
+    # 音声だけ差し替え（映像は無劣化コピー）: 末尾の「まもなく公開」を切って無音で埋める
+    tmpa = str(Path(dst).with_suffix(".audio.mp4"))
+    try:
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", dst, "-c:v", "copy",
+             "-af", af, "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", tmpa])
+        shutil.move(tmpa, dst)
+    finally:
+        if os.path.exists(tmpa):
+            try: os.unlink(tmpa)
+            except Exception: pass
+
+    log("[fix] 映像「%s」→「%s」 t>=%.2fs (%dx%d fs=%d) 尺 %.2fs→%.2fs"
+        % (OLD, " / ".join(lines), t0, w, h, fs, dur, total))
+    log("[fix] 音声 末尾発話(まもなく公開)を %.2fs で切断 → %.2fs まで無音で保持"
+        % (cut, total))
     return True
 
 
