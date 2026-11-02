@@ -15,7 +15,7 @@ from pathlib import Path
 
 OLD = "まもなく公開"
 # 音声の末尾に残る「まもなく公開」も消す（映像だけ直しても音声が残る）
-ACUT_FALLBACK = 0.62              # 無音ギャップを検出できなかった時の保険（秒・末尾から）
+ACUT_FALLBACK = 0.75              # 無音ギャップを検出できなかった時の保険（秒・末尾から）
 NEW = "四柱推命を、もっと深く。\n無料でダウンロード。"
 FONTS = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
@@ -96,25 +96,26 @@ def find_start(src, dur, hi=0.995, step=0.10):
 
 
 def last_sentence_start(src, dur):
-    """音声の末尾発話（=「まもなく公開」）の開始時刻を無音ギャップから求める。"""
+    """音声末尾の「まもなく公開。」を除去する切断位置を求める。
+
+    最後の長い無音（間）の「開始」＝直前の発話の終わり を切る。
+    文末の句の後ろに必ず間が入るため、その間ごと最終文を落とせる。
+    """
     try:
         r = subprocess.run(["ffmpeg", "-hide_banner", "-i", src,
-                            "-af", "silencedetect=noise=-32dB:d=0.18", "-f", "null", "-"],
+                            "-af", "silencedetect=noise=-30dB:d=0.30", "-f", "null", "-"],
                            capture_output=True)
         txt = (r.stderr or b"").decode("utf-8", "ignore")
         starts = [float(x) for x in re.findall(r"silence_start:\s*([\d.]+)", txt)]
         ends = [float(x) for x in re.findall(r"silence_end:\s*([\d.]+)", txt)]
         best = None
-        for i, st in enumerate(starts):
-            if i < len(ends):
-                en = ends[i]
-            else:
-                continue  # 末尾まで無音（=発話なし）
-            # 末尾2.2秒以内に始まり、0.10〜0.9秒の短い間 → その直後が最終文
-            if en >= dur - 2.2 and en <= dur - 0.03 and (en - st) <= 0.9:
-                best = en
-        if best is not None and dur - best <= 1.3:
-            return max(0.0, best - 0.03)
+        for i in range(min(len(starts), len(ends))):
+            st, en = starts[i], ends[i]
+            # 末尾1.9秒以内に終わる「間」で、0.30秒以上のもの → その開始が直前発話の終わり
+            if en >= dur - 1.9 and en <= dur - 0.05 and (en - st) >= 0.30:
+                best = st
+        if best is not None and 0.4 <= (dur - best) <= 2.6:
+            return max(0.0, best + 0.02)
     except Exception as e:
         log("[fix] 音声ギャップ検出失敗:", repr(e)[:120])
     return max(0.0, dur - ACUT_FALLBACK)
@@ -149,8 +150,8 @@ def fix(src, dst, label=NEW):
     cut = last_sentence_start(src, dur)
     total = dur + TAIL
     af = ("atrim=end=%.3f,asetpts=PTS-STARTPTS,"
-          "afade=t=out:st=%.3f:d=0.12,apad=whole_dur=%.3f"
-          % (cut, max(0.0, cut - 0.12), total))
+          "afade=t=out:st=%.3f:d=0.25,apad=whole_dur=%.3f"
+          % (cut, max(0.0, cut - 0.25), total))
     pad = "tpad=stop_mode=clone:stop_duration=%.2f" % TAIL
     enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
            "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
