@@ -10,3 +10,4 @@
 {"date": "2026-11-01", "ganshi": "己卯", "persona": "ナポレオン", "stem": "己", "n": 95, "time": "08:02", "event": "workflow_dispatch"}
 {"date": "2026-11-02", "ganshi": "庚辰", "persona": "孔子", "stem": "庚", "n": 106, "time": "09:21", "event": "workflow_dispatch"}
 {"date": "2026-11-03", "ganshi": "辛巳", "persona": "卑弥呼", "stem": "辛", "n": 117, "time": "07:37", "event": "workflow_dispatch"}
+{"date": "2026-11-04", "ganshi": "壬午", "persona": "藤原道長", "stem": "壬", "n": 128, "time": "04:59", "event": "schedule"}
