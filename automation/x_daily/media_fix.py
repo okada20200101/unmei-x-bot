@@ -237,6 +237,13 @@ def fix(src, dst, label=NEW):
                  "-af", af, "-c:a", "aac", "-b:a", "192k",
                  "-movflags", "+faststart", tmpa])
         shutil.move(tmpa, dst)
+        # 最終正規化: X 側のメディア処理に合わせて 48kHz / mono / 32k に統一
+        norm = str(Path(dst).with_suffix(".norm.mp4"))
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", dst,
+             "-map", "0:v", "-map", "0:a", "-c:v", "copy",
+             "-c:a", "aac", "-ar", "48000", "-ac", "1", "-b:a", "32000",
+             "-t", "%.3f" % total, "-movflags", "+faststart", norm])
+        shutil.move(norm, dst)
     finally:
         if os.path.exists(tmpa):
             try:
