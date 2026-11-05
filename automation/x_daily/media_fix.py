@@ -128,6 +128,35 @@ def font_arg():
     return ""
 
 
+# ---- エンドカードのナレーション（映像の文字と同じ内容を読み上げる）----
+VOICES = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "end_voice.mp3"),
+    "/tmp/fr/end.mp3",
+]
+VOICE_GAP = 0.45      # 直前の文が終わってから読み上げ開始までの間
+VOICE_PAD = 0.50      # 読み上げ後、動画を伸ばす余白
+
+
+def adur(p):
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                            "format=duration", "-of", "csv=p=0", p],
+                           capture_output=True)
+        return float((r.stdout or b"0").decode().strip() or 0)
+    except Exception:
+        return 0.0
+
+
+def end_voice():
+    for v in VOICES:
+        try:
+            if os.path.exists(v) and os.path.getsize(v) > 1000:
+                return v
+        except Exception:
+            pass
+    return None
+
+
 def fix(src, dst, label=NEW):
     w, h, dur = probe(src)
     start = find_start(src, dur)
@@ -142,22 +171,26 @@ def fix(src, dst, label=NEW):
         log("[fix] 日本語フォント無し → そのまま使用")
         shutil.copyfile(src, dst)
         return False
-    # drawtext の fontsize は数値のみ（ih*… は評価されない）→ 実寸から算出
     fs = max(10, int(round(h * FSIZE)))
     box = ("drawbox=x=iw*%f:y=ih*%f:w=iw*%f:h=ih*%f:color=%s@1:t=fill:enable='gte(t,%.3f)'"
            % (BX, BY, BW, BH, BG, t0))
-    # 音声は末尾で切れている → 語尾を短くフェードさせて唐突さを消す
     cut = last_sentence_start(src, dur)
-    total = dur + TAIL
-    af = ("atrim=end=%.3f,asetpts=PTS-STARTPTS,"
-          "afade=t=out:st=%.3f:d=0.25,apad=whole_dur=%.3f"
-          % (cut, max(0.0, cut - 0.25), total))
-    pad = "tpad=stop_mode=clone:stop_duration=%.2f" % TAIL
+
+    voice = end_voice()
+    vdur = adur(voice) if voice else 0.0
+    if voice and vdur > 0.3:
+        delay = cut + VOICE_GAP
+        total = delay + vdur + VOICE_PAD
+    else:
+        voice, vdur, delay = None, 0.0, 0.0
+        total = dur + TAIL
+    tail = max(0.2, total - dur)
+
+    pad = "tpad=stop_mode=clone:stop_duration=%.2f" % tail
     enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
            "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     acopy = ["-c:a", "copy"]
     lines = [x for x in label.split("\n") if x.strip()]
-    # 複数フィルタを一度に渡すと評価順で落ちる環境があるため1行ずつパスを分ける
     steps = [box] + ["drawtext=fontfile=%s:text='%s':fontcolor=%s:fontsize=%d"
                      ":x=(w-text_w)/2:y=%d:enable='gte(t,%.3f)'"
                      % (f, s.replace("'", "").replace(":", "\\:"), FG, fs,
@@ -172,39 +205,51 @@ def fix(src, dst, label=NEW):
             if not last:
                 tmps.append(nxt)
             cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", cur, "-vf", flt]
-            if i == 0:
-                cmd += ["-c:a", "copy"]
-            else:
-                cmd += acopy
+            cmd += (["-c:a", "copy"] if i == 0 else acopy)
             run(cmd + enc + [nxt])
             cur = nxt
     finally:
         for p in tmps:
             if os.path.exists(p):
                 os.unlink(p)
-    # 音声だけ差し替え（映像は無劣化コピー）: 末尾の「まもなく公開」を切って無音で埋める
+
+    # 音声だけ差し替え（映像は無劣化コピー）
+    # 末尾の「まもなく公開」を切って、代わりにエンドカードの読み上げを載せる
     tmpa = str(Path(dst).with_suffix(".audio.mp4"))
     try:
-        run(["ffmpeg", "-y", "-loglevel", "error", "-i", dst, "-c:v", "copy",
-             "-af", af, "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", tmpa])
+        if voice:
+            fc = ("[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+                  "atrim=end=%.3f,asetpts=PTS-STARTPTS,afade=t=out:st=%.3f:d=0.25[m];"
+                  "[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+                  "adelay=%d|%d[v];"
+                  "[m][v]amix=inputs=2:duration=longest:normalize=0,"
+                  "apad=whole_dur=%.3f[a]"
+                  % (cut, max(0.0, cut - 0.25), int(delay * 1000), int(delay * 1000), total))
+            run(["ffmpeg", "-y", "-loglevel", "error", "-i", dst, "-i", voice,
+                 "-filter_complex", fc, "-map", "0:v", "-map", "[a]",
+                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                 "-movflags", "+faststart", tmpa])
+        else:
+            af = ("atrim=end=%.3f,asetpts=PTS-STARTPTS,"
+                  "afade=t=out:st=%.3f:d=0.25,apad=whole_dur=%.3f"
+                  % (cut, max(0.0, cut - 0.25), total))
+            run(["ffmpeg", "-y", "-loglevel", "error", "-i", dst, "-c:v", "copy",
+                 "-af", af, "-c:a", "aac", "-b:a", "192k",
+                 "-movflags", "+faststart", tmpa])
         shutil.move(tmpa, dst)
     finally:
         if os.path.exists(tmpa):
-            try: os.unlink(tmpa)
-            except Exception: pass
+            try:
+                os.unlink(tmpa)
+            except Exception:
+                pass
 
     log("[fix] 映像「%s」→「%s」 t>=%.2fs (%dx%d fs=%d) 尺 %.2fs→%.2fs"
         % (OLD, " / ".join(lines), t0, w, h, fs, dur, total))
-    log("[fix] 音声 末尾発話(まもなく公開)を %.2fs で切断 → %.2fs まで無音で保持"
-        % (cut, total))
+    if voice:
+        log("[fix] 音声 末尾発話(まもなく公開)を %.2fs で切断 → %.2fs から読み上げ「%s」%.2fs"
+            % (cut, delay, label.replace("\n", " "), vdur))
+    else:
+        log("[fix] 音声 末尾発話(まもなく公開)を %.2fs で切断 → %.2fs まで無音で保持"
+            " (end_voice.mp3 未配置)" % (cut, total))
     return True
-
-
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print(__doc__); sys.exit(2)
-    a, b = sys.argv[1], sys.argv[2]
-    lab = NEW
-    if "--label" in sys.argv:
-        lab = sys.argv[sys.argv.index("--label") + 1].replace("\\n", "\n")
-    fix(a, b, lab)
