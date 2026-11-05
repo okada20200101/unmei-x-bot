@@ -496,7 +496,9 @@ def main():
         try:
             id1, id2 = api_post.post_thread(video, item["post1"], item["post2"])
         except Exception as e:
-            log("[error] API投稿に失敗:", repr(e)[:400])
+            _r = getattr(e, "response", None)
+            _b = getattr(_r, "text", "") or ""
+            log("[error] API投稿に失敗:", repr(e)[:200], "| body:", _b[:400])
             return 1
         log("[capture] tweet id %s" % id1)
         log("[api] 完了 id1=%s id2=%s" % (id1, id2))
