@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/app_state.dart';
+import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 
 /// メールアドレスとパスワードだけで完結するログイン画面。
@@ -29,14 +30,25 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   String _toMessage(Object e) {
-    final s = e.toString();
-    if (s.contains('invalid_credentials')) return 'メールアドレスまたはパスワードが違います。';
-    if (s.contains('invalid_email')) return 'メールアドレスの形式が正しくありません。';
-    if (s.contains('password_too_short')) return 'パスワードが短すぎます。8文字以上で入力してください。';
-    if (s.contains('SocketException') || s.contains('TimeoutException') || s.contains('network')) {
-      return '通信できませんでした。電波の良い場所でもう一度お試しください。';
+    final ApiException? ex = e is ApiException ? e : null;
+    if (ex == null) {
+      return 'ログインできませんでした。時間をおいてもう一度お試しください。';
     }
-    return 'ログインできませんでした。時間をおいてもう一度お試しください。';
+    switch (ex.code) {
+      case 'invalid_credentials':
+      case 'invalid_login':
+        return 'メールアドレスまたはパスワードが違います。';
+      case 'invalid_email':
+        return 'メールアドレスの形式が正しくありません。';
+      case 'password_too_short':
+        return 'パスワードが短すぎます。8文字以上で入力してください。';
+      case 'network':
+        return '通信できませんでした。電波の良い場所でもう一度お試しください。';
+      case 'unauthorized':
+        return 'ログインの有効期限が切れました。もう一度お試しください。';
+      default:
+        return ex.message;
+    }
   }
 
   Future<void> _submit() async {
